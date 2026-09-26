@@ -1,0 +1,49 @@
+# Copy to terraform.tfvars (gitignored) and fill <YOUR_*> values.
+# NEVER commit real passwords or access keys.
+
+# --- Required for Phase 1 validate / later applies ---
+aws_region = "<YOUR_REGION>"          # e.g. ap-southeast-1
+owner      = "<YOUR_OWNER>"           # e.g. nhom01-person2
+expires_at = "<YOUR_EXPIRES_AT>"      # e.g. 2026-12-31
+
+project_name = "cloudrescue"
+environment  = "dev"
+job_id       = "none"
+mode         = "shared"
+
+# Optional: only if you do not export AWS_PROFILE
+# aws_profile = "cloudrescue-dev"
+
+enable_network       = true
+enable_iam           = true
+enable_storage       = true
+enable_database      = false
+enable_controller    = false
+enable_observability = false
+
+# Optional SSH to controller from your IP only (never 0.0.0.0/0)
+# ssh_ingress_cidr = "<YOUR_PUBLIC_IP>/32"
+ssh_ingress_cidr = ""
+
+# S3 lifecycle (cost control for versioned backups)
+s3_noncurrent_version_expiration_days = 30
+
+# --- Network defaults (Phase 2) ---
+vpc_cidr                = "10.20.0.0/16"
+public_subnet_cidr      = "10.20.1.0/24"
+private_db_subnet_cidrs = ["10.20.10.0/24", "10.20.11.0/24"]
+# Leave empty to auto-pick first 2 AZs in the region:
+availability_zones = []
+# Or set explicitly, e.g.:
+# availability_zones = ["ap-southeast-1a", "ap-southeast-1b"]
+
+# --- Database (Phase 5) — set password via env, not git:
+#   PowerShell:  $env:TF_VAR_db_password = "<YOUR_DB_PASSWORD>"
+#   bash:        export TF_VAR_db_password='<YOUR_DB_PASSWORD>'
+db_name           = "cloudrescue"
+db_username       = "cr_admin"
+db_instance_class = "db.t3.micro"
+# db_password     = "<YOUR_DB_PASSWORD>"   # prefer TF_VAR_db_password instead
+
+# --- Controller (later) ---
+controller_instance_type = "t3.micro"

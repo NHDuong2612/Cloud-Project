@@ -1,0 +1,48 @@
+# --- Secrets & credentials (NEVER commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*credentials*
+*accessKeys*
+*secret*
+*.csv
+!terraform/terraform.tfvars.example
+
+# AWS / local creds accidentally copied into repo
+.aws/
+credentials
+config
+
+# --- Terraform ---
+**/.terraform/
+**/terraform.tfvars
+**/terraform.tfvars.json
+**/*.auto.tfvars
+**/*.auto.tfvars.json
+**/crash.log
+**/crash.*.log
+**/override.tf
+**/override.tf.json
+**/*_override.tf
+**/*_override.tf.json
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.plan
+plan-output.txt
+tfplan-*.tfplan
+network-outputs.json
+
+# Keep .terraform.lock.hcl in git (provider version pin)
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Evidence may contain account screenshots; keep local if preferred ---
+# evidence/ (uncomment if you do not want screenshots in git)
