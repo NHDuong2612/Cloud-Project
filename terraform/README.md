@@ -1,20 +1,19 @@
-# CloudHub — hạ tầng dùng chung
+# CloudHub — hạ tầng dùng chung của TV3
 
-Terraform ở đây chỉ dành cho hạ tầng chung của CloudHub. Khi khởi tạo, nó sẽ dùng state riêng, tách khỏi `legacy/cloudrescue/terraform/`.
+State ở đây tách khỏi `legacy/cloudrescue/terraform/`. Dùng AWS profile admin hoặc SSO của nhóm để triển khai nền tảng; không cần root. Các workload dùng role riêng được giới hạn quyền, không nhận quyền admin của người triển khai.
 
-## Thành phần hiện có
-
-| Module | Công dụng | Trạng thái mặc định |
+| Module | Nội dung | Cờ bật |
 | --- | --- | --- |
-| `network` | VPC, hai public subnet ở hai AZ, hai private DB subnet và routing | Tắt |
-| `storage` | Bucket S3 riêng tư, mã hóa, versioning để giữ hiện vật phục hồi của CloudHub | Tắt |
+| network | VPC, hai public subnet và hai private DB subnet trong hai AZ | enable_network |
+| storage | Bucket phục hồi riêng tư, mã hóa, versioning, TLS-only | enable_storage |
+| platform | DynamoDB control/stream/PITR, bucket deployment, ECR và IAM boundary/deployer | enable_platform |
+| orchestrator | Lambda, Step Functions Standard, log, alarm, reconciler và DLQ | enable_orchestrator |
 
-Hai module này được điều chỉnh từ phần có thể dùng lại của CloudRescue. Bucket không thay thế snapshot EBS/RDS hay cơ chế AWS Backup của từng mẫu. Hạ tầng chung chưa có API, Cognito, DynamoDB, Step Functions, EventBridge Scheduler hay CloudFormation template cho T01–T10.
+Các cờ mặc định tắt. Điền account ID để provider chặn nhầm tài khoản. Bảng control được bảo vệ bằng prevent_destroy; S3/ECR không force-delete dữ liệu. Bucket recovery không thay thế EBS/RDS snapshot hoặc AWS Backup.
 
-## Chuẩn bị
+1. Sao chép `terraform.tfvars.example`, điền region/account/owner/CIDR.
+2. Chạy preflight, `terraform init`, `terraform validate` và xem plan trước khi triển khai từng module.
+3. Sau khi có deployment bucket, build/upload worker bằng key hash, điền worker_s3_key rồi mới bật orchestrator.
+4. Giữ verified_templates rỗng cho đến khi có bằng chứng vòng đời AWS với TV2/TV4.
 
-1. Sao chép `terraform.tfvars.example` thành `terraform.tfvars` và điền region, owner, CIDR.
-2. Dùng AWS profile của nhóm qua `AWS_PROFILE`; không ghi access key trong mã.
-3. Chạy `terraform init`, `terraform validate`, rồi xem `terraform plan` trước khi bật từng module.
-
-Mặc định `enable_network = false` và `enable_storage = false`, nên cấu hình mẫu không tạo tài nguyên. Dùng tên, tag và Terraform state riêng cho CloudHub. Nếu định dùng lại VPC cũ, cần quyết định quyền sở hữu và nhập nó vào state CloudHub có kiểm soát; không trỏ hai state vào cùng tài nguyên.
+Tài nguyên từng phiên thuộc stack `cloudhub-env-<id>` do F04 quản lý, không nhập vào Terraform state dùng chung. Nếu dùng lại tài nguyên cũ, cần chuyển quyền quản lý state riêng có kiểm soát. Tham khảo [hướng dẫn triển khai](../docs/tv3-deployment.md) và [hợp đồng dữ liệu](../docs/tv3-contracts.md).

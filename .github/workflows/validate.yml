@@ -23,6 +23,9 @@ jobs:
           mkdir /tmp/guard
           tar -xzf /tmp/guard.tar.gz -C /tmp/guard --strip-components=1
       - run: /tmp/guard/cfn-guard validate --rules security/cloudhub.guard --data src/cloudhub/templates --output-format json
+      - run: python scripts/test_guard.py --guard-bin /tmp/guard/cfn-guard
+      - name: Check bootstrap shell syntax
+        run: for script in scripts/assets/*.sh; do bash -n "$script"; done
   terraform:
     runs-on: ubuntu-latest
     defaults:

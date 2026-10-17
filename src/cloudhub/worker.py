@@ -13,6 +13,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from .catalog import ValidationError, get_template, require_available, validate_config
 from .settings import Settings
 from .store import DynamoStore
+from .inventory import InventoryCollector
 
 
 class RetryableDeploymentError(RuntimeError):
@@ -27,9 +28,40 @@ TERMINAL = {"SUCCEEDED", "PREVIEWED", "NO_CHANGES", "FAILED", "REJECTED", "WAITI
 OUTPUTS = {"InstanceId", "AmiId", "RootDeviceName", "EndpointUrl", "DatabaseIdentifier", "TargetGroupArn", "AutoScalingGroupName", "ServiceArn", "ClusterName", "RegisteredDataPrefix"}
 
 
+def database_restore_stage(template):
+    """PostgreSQL snapshot restore must precede enabling managed credentials."""
+    from copy import deepcopy
+    result = deepcopy(template)
+    database_resources = {"InstanceSecurityGroup", "DatabaseSecurityGroup", "DatabaseIngress", "AppDatabaseEgress", "DatabaseSubnets", "DatabaseParameters", "Database"}
+    result["Resources"] = {k: v for k, v in result["Resources"].items() if k in database_resources}
+    result["Resources"]["Database"]["Properties"]["ManageMasterUserPassword"] = False
+    result["Outputs"] = {"DatabaseIdentifier": template["Outputs"]["DatabaseIdentifier"]}
+    result["Description"] = "CloudHub internal database-only PostgreSQL restore stage; F04 enables managed credentials before adding the application."
+    used = set()
+    def collect(value):
+        if isinstance(value, dict):
+            if "Ref" in value:
+                used.add(value["Ref"])
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+        elif isinstance(value, str):
+            used.update(re.findall(r"\$\{([A-Za-z0-9]+)(?:\.[^}]*)?\}", value))
+    for section in ("Resources", "Outputs", "Conditions", "Rules"):
+        collect(result.get(section, {}))
+    result["Parameters"] = {k: v for k, v in result["Parameters"].items() if k in used}
+    result["Parameters"]["DBSnapshotIdentifier"].pop("Default", None)
+    result["Parameters"]["DBSnapshotIdentifier"]["MinLength"] = 1
+    return result
+
+
 class Worker:
-    def __init__(self, store, cfn, ssm, elb, settings, clock=time.time):
+    def __init__(self, store, cfn, ssm, elb, settings, clock=time.time, rds=None, collector=None):
         self.store, self.cfn, self.ssm, self.elb, self.settings, self.clock = store, cfn, ssm, elb, settings, clock
+        self.rds = rds
+        self.collector = collector
 
     def records(self, event):
         env_id, op_id = event["environment_id"], event["operation_id"]
@@ -53,7 +85,7 @@ class Worker:
         if phase not in ("acquire", "recover", "rollback_poll") and int(self.clock()) - int(op["started_at"]) > 7200:
             raise ValidationError("Deployment deadline exceeded.")
         method = getattr(self, phase, None)
-        if method is None or phase not in {"acquire", "prepare", "changeset", "execute", "poll", "health", "complete", "recover", "rollback_poll"}:
+        if method is None or phase not in {"acquire", "prepare", "changeset", "execute", "poll", "post_provision", "health", "complete", "recover", "rollback_poll"}:
             raise ValidationError("Unknown worker phase.")
         return {**result, **method(env_id, op_id, env, op)}
 
@@ -105,6 +137,8 @@ class Worker:
             job.get("status") == "COMPLETED", job.get("owner_id") == env["owner_id"],
             job.get("source_version") == op["expected_version"], job.get("source_quiesced") is True,
             job.get("operation_id") == op_id, bool(job.get("recovery_point")),
+            env.get("write_fence_operation_id") == op_id, env.get("lock_owner") == op_id,
+            env.get("status") in {"FINALIZING", "DELETING"},
         ]):
             raise ValidationError("A consistent completed F06 backup is required before deletion.")
 
@@ -143,8 +177,12 @@ class Worker:
 
     def inventory(self, env_id, op_id, stack_id):
         pages = self.cfn.get_paginator("list_stack_resources").paginate(StackName=stack_id)
+        resources = []
         for page in pages:
+            resources.extend(page["StackResourceSummaries"])
             self.store.inventory(env_id, op_id, page["StackResourceSummaries"], int(self.clock()))
+        if self.collector is not None:
+            self.store.inventory(env_id, op_id, self.collector.expand(resources), int(self.clock()))
 
     def prepare(self, env_id, op_id, env, op):
         action = op["action"]
@@ -168,6 +206,9 @@ class Worker:
         config = validate_config(template.id, template.version, op.get("config", env["config"]))
         body = template.path.read_text(encoding="utf-8")
         schema = json.loads(body)
+        if action == "create" and env.get("restore_job_id") and template.id in {"T03", "T04"}:
+            schema = database_restore_stage(schema)
+            body = json.dumps(schema)
         parameters = self.settings.parameters(template.id, env_id, config)
         if action == "create":
             parameters.update(self.restore_parameters(env_id, op_id, env))
@@ -205,7 +246,7 @@ class Worker:
         if status != "CREATE_COMPLETE":
             raise ValidationError("Change set is not executable.")
         changes = [x.get("ResourceChange", {}) for x in change.get("Changes", [])]
-        if op["action"] != "create" and any(x.get("Replacement") in {"True", "Conditional"} and x.get("ResourceType") != "AWS::ECS::TaskDefinition" for x in changes):
+        if (op["action"] != "create" or op.get("deployment_stage") == "application") and any(x.get("Replacement") in {"True", "Conditional"} and x.get("ResourceType") != "AWS::ECS::TaskDefinition" for x in changes):
             raise ValidationError("Resource replacement requires a separate restore/migration workflow.")
         if op["action"] == "plan_update":
             summary = [{k: x[k] for k in ("LogicalResourceId", "ResourceType", "Action", "Replacement") if k in x} for x in changes]
@@ -217,7 +258,7 @@ class Worker:
     def execute(self, env_id, op_id, env, op):
         change = self.cfn.describe_change_set(ChangeSetName=op["change_set_id"])
         if change.get("ExecutionStatus") not in {"EXECUTE_IN_PROGRESS", "EXECUTE_COMPLETE"}:
-            self.cfn.execute_change_set(ChangeSetName=op["change_set_id"], ClientRequestToken=op_id)
+            self.cfn.execute_change_set(ChangeSetName=op["change_set_id"], ClientRequestToken=f"{op_id}-{op.get('deployment_stage', 'initial')}")
         return {}
 
     def poll(self, env_id, op_id, env, op):
@@ -239,6 +280,37 @@ class Worker:
         outputs = {x["OutputKey"]: x["OutputValue"] for x in stack.get("Outputs", []) if x["OutputKey"] in OUTPUTS}
         self.store.patch_operation(env_id, op_id, outputs=outputs)
         return {}
+
+    def post_provision(self, env_id, op_id, env, op):
+        if op["action"] != "create" or not env.get("restore_job_id") or env["template_id"] not in {"T03", "T04"} or op.get("deployment_stage") == "application":
+            return {}
+        identifier = op["outputs"]["DatabaseIdentifier"]
+        if not op.get("password_management_requested"):
+            self.rds.modify_db_instance(DBInstanceIdentifier=identifier, ManageMasterUserPassword=True, ApplyImmediately=True)
+            self.store.patch_operation(env_id, op_id, password_management_requested=True)
+            return {"outcome": "WAIT"}
+        database = self.rds.describe_db_instances(DBInstanceIdentifier=identifier)["DBInstances"][0]
+        secret_status = database.get("MasterUserSecret", {}).get("SecretStatus")
+        if secret_status == "impaired":
+            raise ValidationError("Restored database credential management needs review.")
+        if database["DBInstanceStatus"] != "available" or secret_status != "active":
+            return {"outcome": "WAIT"}
+        template = get_template(env["template_id"], env["template_version"])
+        schema = json.loads(template.path.read_text(encoding="utf-8"))
+        parameters = self.settings.parameters(template.id, env_id, op["config"])
+        parameters.update(self.restore_parameters(env_id, op_id, env))
+        request = {
+            "StackName": op["stack_id"], "ChangeSetName": f"op-{op_id}-app", "ChangeSetType": "UPDATE", "TemplateBody": json.dumps(schema),
+            "Parameters": [{"ParameterKey": k, "ParameterValue": str(v)} for k, v in parameters.items() if k in schema["Parameters"]],
+            "Capabilities": ["CAPABILITY_NAMED_IAM"], "RoleARN": self.settings.cfn_role_arn, "ClientToken": f"{op_id}-app",
+        }
+        try:
+            response = self.cfn.create_change_set(**request)
+        except self.cfn.exceptions.AlreadyExistsException:
+            response = self.cfn.describe_change_set(StackName=request["StackName"], ChangeSetName=request["ChangeSetName"])
+            response = {"Id": response["ChangeSetId"], "StackId": response["StackId"]}
+        self.store.patch_operation(env_id, op_id, change_set_id=response["Id"], deployment_stage="application")
+        return {"outcome": "CHANGESET"}
 
     def health(self, env_id, op_id, env, op):
         if not op.get("health_started"):
@@ -319,11 +391,13 @@ def runtime():
     settings = Settings.from_env()
     config = Config(retries={"mode": "standard", "total_max_attempts": 3}, connect_timeout=5, read_timeout=20)
     session = boto3.Session()
-    return Worker(DynamoStore(session.resource("dynamodb", config=config).Table(settings.table_name)), session.client("cloudformation", config=config), session.client("ssm", config=config), session.client("elbv2", config=config), settings)
+    collector = InventoryCollector(session.client("ec2", config=config), session.client("autoscaling", config=config), session.client("ecs", config=config), session.client("efs", config=config))
+    return Worker(DynamoStore(session.resource("dynamodb", config=config).Table(settings.table_name)), session.client("cloudformation", config=config), session.client("ssm", config=config), session.client("elbv2", config=config), settings, rds=session.client("rds", config=config), collector=collector)
 
 
 def handler(event, context):
     worker = runtime()
+    error_message = "Operation could not be completed; review its status and inventory."
     try:
         return worker.run(event)
     except ClientError as exc:
@@ -332,7 +406,10 @@ def handler(event, context):
         if transient_transaction or code in {"Throttling", "ThrottlingException", "TooManyRequestsException", "RequestLimitExceeded", "TransactionInProgressException"}:
             raise RetryableDeploymentError("AWS_RETRYABLE") from None
         error_code = "AWS_" + re.sub(r"[^A-Za-z0-9_]", "", code)[:64]
-    except (ValidationError, KeyError, TypeError, ValueError):
+    except ValidationError as exc:
+        error_code = "INVALID_OPERATION_OR_STATE"
+        error_message = str(exc)[:256]
+    except (KeyError, TypeError, ValueError):
         error_code = "INVALID_OPERATION_OR_STATE"
     except BotoCoreError:
         raise RetryableDeploymentError("AWS_TRANSPORT_RETRYABLE") from None
@@ -340,7 +417,7 @@ def handler(event, context):
     if re.fullmatch(r"[a-f0-9]{32}", str(event.get("environment_id", ""))) and re.fullmatch(r"[a-f0-9]{32}", str(event.get("operation_id", ""))):
         try:
             worker.records(event)
-            worker.store.patch_operation(event["environment_id"], event["operation_id"], error_code=error_code)
+            worker.store.patch_operation(event["environment_id"], event["operation_id"], error_code=error_code, error_message=error_message)
         except (ClientError, ValidationError, KeyError, TypeError, ValueError):
             pass
     return {"environment_id": event.get("environment_id", ""), "operation_id": event.get("operation_id", ""), "outcome": "ERROR", "error_code": error_code}

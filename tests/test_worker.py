@@ -96,6 +96,9 @@ def test_delete_requires_quiesced_backup_for_same_version_and_operation(make_wor
         call(worker, "acquire")
     store.op["backup_job_id"] = "job-1"
     store.other["BACKUP#job-1"] = {"status": "COMPLETED", "owner_id": "user-1", "source_version": 1, "source_quiesced": True, "operation_id": OP_ID, "recovery_point": "snapshot-id"}
+    with pytest.raises(ValidationError):
+        call(worker, "acquire")
+    store.env.update(status="FINALIZING", lock_owner=OP_ID, write_fence_operation_id=OP_ID)
     call(worker, "acquire")
     assert store.env["status"] == "DELETING"
     cfn.delete_stack.assert_not_called()
@@ -201,3 +204,71 @@ def test_workflow_is_bounded_and_all_choices_have_defaults():
             assert set(state["Parameters"]["Payload"]) == {"phase", "environment_id.$", "operation_id.$"}
         if state["Type"] == "Choice":
             assert "Default" in state
+
+
+def test_quota_reservation_must_match_configuration(make_worker):
+    worker, store, _, _, _ = make_worker()
+    store.other["QUOTA#server-reservation"]["config_hash"] = "wrong"
+    with pytest.raises(ValidationError, match="Quota reservation"):
+        call(worker, "acquire")
+    assert "lock_owner" not in store.env
+
+
+def test_postgres_restore_enables_credentials_before_app_resources(make_worker):
+    worker, store, cfn, _, _ = make_worker()
+    from cloudhub.catalog import validate_config
+    config = validate_config("T03", "1.0.0", {"allowed_cidr": "192.0.2.1/32"})
+    store.env.update(template_id="T03", config=config, restore_job_id="restore-1", lock_owner=OP_ID)
+    store.op.update(status="RUNNING", started_at=1000, config=config, stack_id="stack-id", outputs={"DatabaseIdentifier": "cloudhub-env-db"})
+    store.other["RESTORE#restore-1"] = {"status": "APPROVED", "owner_id": "user-1", "operation_id": OP_ID, "ownership_verified": True, "template_id": "T03", "template_version": "1.0.0", "parameters": {"DBSnapshotIdentifier": "owned-snapshot"}}
+    worker.settings = Settings("table", "arn:aws:iam::123456789012:role/deployer", {"CodeBucket": "cloudhub-code", "CrudBundleKey": "apps/crud/" + "a" * 64 + ".zip"})
+    worker.rds = Mock()
+    assert call(worker, "post_provision")["outcome"] == "WAIT"
+    worker.rds.modify_db_instance.assert_called_once_with(DBInstanceIdentifier="cloudhub-env-db", ManageMasterUserPassword=True, ApplyImmediately=True)
+    cfn.create_change_set.assert_not_called()
+    worker.rds.describe_db_instances.return_value = {"DBInstances": [{"DBInstanceStatus": "available", "MasterUserSecret": {"SecretStatus": "active"}}]}
+    cfn.create_change_set.return_value = {"Id": "app-change-set", "StackId": "stack-id"}
+    assert call(worker, "post_provision")["outcome"] == "CHANGESET"
+    request = cfn.create_change_set.call_args.kwargs
+    template = json.loads(request["TemplateBody"])
+    assert request["ChangeSetType"] == "UPDATE"
+    assert template["Resources"]["Database"]["Properties"]["ManageMasterUserPassword"] is True
+    assert "Instance" in template["Resources"]
+    assert store.op["deployment_stage"] == "application"
+
+
+def test_restore_job_cannot_cross_owners(make_worker):
+    worker, store, _, _, _ = make_worker()
+    store.env["restore_job_id"] = "restore-1"
+    store.other["RESTORE#restore-1"] = {"status": "APPROVED", "owner_id": "other-user"}
+    with pytest.raises(ValidationError):
+        call(worker, "acquire")
+
+
+def test_dynamodb_transactions_serialize_with_real_sdk_models():
+    import boto3
+    from botocore.stub import Stubber
+    table = boto3.resource("dynamodb", region_name="ap-southeast-1", aws_access_key_id="test", aws_secret_access_key="test").Table("cloudhub-test")
+    with Stubber(table.meta.client) as stub:
+        stub.add_response("transact_write_items", {})
+        stub.add_response("transact_write_items", {})
+        store = DynamoStore(table)
+        fixture = Store()
+        store.lock(fixture.env, fixture.op, "PROVISIONING", 1000)
+        store.finish(fixture.env, fixture.op, "READY", "SUCCEEDED", 1000)
+        stub.assert_no_pending_responses()
+
+
+def test_changeset_request_matches_cloudformation_sdk_models(make_worker):
+    import boto3
+    from botocore.stub import Stubber
+    worker, store, _, _, _ = make_worker()
+    worker.cfn = boto3.client("cloudformation", region_name="ap-southeast-1", aws_access_key_id="test", aws_secret_access_key="test")
+    worker.settings = Settings("table", "arn:aws:iam::123456789012:role/deployer", {"VpcId": "vpc-0123456789abcdef0", "PublicSubnetId": "subnet-0123456789abcdef0", "WorkloadBoundaryArn": "arn:aws:iam::123456789012:policy/boundary"})
+    store.env["lock_owner"] = OP_ID
+    store.op.update(status="RUNNING", started_at=1000)
+    with Stubber(worker.cfn) as stub:
+        stub.add_response("create_change_set", {"Id": "arn:aws:cloudformation:ap-southeast-1:123456789012:changeSet/op-test/123", "StackId": "arn:aws:cloudformation:ap-southeast-1:123456789012:stack/cloudhub-env-test/123"})
+        call(worker, "prepare")
+        stub.assert_no_pending_responses()
+    assert "change_set_id" in store.op

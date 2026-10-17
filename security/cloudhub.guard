@@ -36,9 +36,24 @@ rule load_balancers_require_https when %listeners !empty {
     %listeners.Properties.Protocol == 'HTTPS'
 }
 
-let ingress = Resources.*[ Type == 'AWS::EC2::SecurityGroup' ].Properties.SecurityGroupIngress[*][ CidrIp exists ]
-rule no_worldwide_ingress when %ingress !empty {
-    %ingress.CidrIp != '0.0.0.0/0'
+let groups = Resources.*[ Type == 'AWS::EC2::SecurityGroup' ]
+rule no_worldwide_ingress when %groups !empty {
+    %groups.Properties {
+        when SecurityGroupIngress exists {
+            SecurityGroupIngress[*] {
+                when CidrIp exists { CidrIp != '0.0.0.0/0' OR CidrIp.Ref == 'AllowedCidr' }
+                when CidrIpv6 exists { CidrIpv6 != '::/0' }
+            }
+        }
+    }
+}
+
+let separate_ingress = Resources.*[ Type == 'AWS::EC2::SecurityGroupIngress' ]
+rule no_worldwide_separate_ingress when %separate_ingress !empty {
+    %separate_ingress.Properties {
+        when CidrIp exists { CidrIp != '0.0.0.0/0' OR CidrIp.Ref == 'AllowedCidr' }
+        when CidrIpv6 exists { CidrIpv6 != '::/0' }
+    }
 }
 
 let tasks = Resources.*[ Type == 'AWS::ECS::TaskDefinition' ]

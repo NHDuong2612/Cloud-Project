@@ -158,6 +158,7 @@ resource "aws_iam_role_policy" "cloudformation" {
       { Effect = "Allow", Action = "iam:PassRole", Resource = local.workload_role_arn, Condition = { StringEquals = { "iam:PassedToService" = ["ec2.amazonaws.com", "ecs-tasks.amazonaws.com"] } } },
       { Effect = "Allow", Action = "iam:CreateServiceLinkedRole", Resource = "${local.arn_prefix}:iam::${local.account_id}:role/aws-service-role/*", Condition = { StringEquals = { "iam:AWSServiceName" = ["autoscaling.amazonaws.com", "rds.amazonaws.com", "ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com"] } } },
       { Effect = "Allow", Action = ["secretsmanager:CreateSecret", "secretsmanager:TagResource", "secretsmanager:DescribeSecret"], Resource = "${local.arn_prefix}:secretsmanager:${local.region}:${local.account_id}:secret:rds!*" },
+      { Effect = "Allow", Action = "kms:DescribeKey", Resource = "${local.arn_prefix}:kms:${local.region}:${local.account_id}:key/*" },
       { Effect = "Allow", Action = "ssm:GetParameters", Resource = "${local.arn_prefix}:ssm:${local.region}::parameter/aws/service/ami-amazon-linux-latest/*" }
     ]
   })

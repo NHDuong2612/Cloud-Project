@@ -30,12 +30,16 @@ Gửi `plan_update` với config chuẩn hóa. Kết quả PREVIEWED chứa `cha
 
 ## Thu hồi và phối hợp TV4
 
-F06 cần hạn chế ghi và ổn định dữ liệu trước khi sao lưu cuối phiên. TV4 có thể giữ khóa với cùng operation ID ở trạng thái FINALIZING, sau đó ghi `sk=BACKUP#<job_id>`: `status=COMPLETED`, `owner_id`, `source_version`, `source_quiesced=true`, `operation_id` và `recovery_point`. Operation delete tham chiếu `backup_job_id`. Sao lưu thất bại hoặc khác version thì F04 không xóa stack. Chính sách purge chỉ được chạy khi META đã ghi `retention_policy=purge` và operation do backend ghi `purge_confirmed=true` sau xác nhận của chủ môi trường.
+F06 cần hạn chế ghi và ổn định dữ liệu trước khi sao lưu cuối phiên. TV4 giữ `lock_owner=<operation_id>`, `write_fence_operation_id=<operation_id>` và trạng thái FINALIZING trên META, sau đó ghi `sk=BACKUP#<job_id>`: `status=COMPLETED`, `owner_id`, `source_version`, `source_quiesced=true`, `operation_id` và `recovery_point`. Operation delete tham chiếu `backup_job_id`. Cả khóa và write fence phải còn được giữ, không chỉ có bản sao cũ hoàn tất. Sao lưu thất bại hoặc khác version thì F04 không xóa stack. Chính sách purge chỉ được chạy khi META đã ghi `retention_policy=purge` và operation do backend ghi `purge_confirmed=true` sau xác nhận của chủ môi trường.
 
 Sau delete-stack, F04 ghi `AWAITING_VERIFICATION`, operation `WAITING_F08`, giữ khóa và inventory. Đây chưa phải xác nhận sạch tài nguyên. F08 đối chiếu API AWS, snapshot/volume giữ lại, hạn lưu và phí; sau đó mới ghi RELEASED hoặc NEEDS_ATTENTION, tăng version, hoàn quota phù hợp và bỏ khóa bằng transaction có điều kiện. RDS snapshot/EBS được giữ theo template phải xuất hiện trong báo cáo, không được xem như đã xóa hết.
 
 Control table có DynamoDB Stream để TV4 nhận thay đổi READY và `expires_at_epoch`. Scheduler đọc lại expiry/version trước khi khóa; gia hạn hợp lệ phải cập nhật có điều kiện, không thu hồi theo lịch cũ.
 
 Khôi phục tạo environment mới và operation `create`, có `restore_job_id` trên META. F06 ghi `sk=RESTORE#<job_id>` trong partition môi trường mới: `status=APPROVED`, `owner_id`, `operation_id`, `ownership_verified=true`, `template_id`, `template_version`, `parameters`. T01/T05 chỉ nhận cặp RootSnapshotId/SourceAmiId; T03/T04 chỉ nhận DBSnapshotIdentifier. F06 phải kiểm tra snapshot nguồn, owner, account/region, AMI, kích thước volume và phiên bản ứng dụng trước khi duyệt. F04 không nhận các trường restore từ trình duyệt hoặc trong config của người dùng.
+
+Với PostgreSQL, F04 tạo database-only stack từ snapshot với managed-password tắt, gọi ModifyDBInstance để bật managed credentials, chờ DB available/secret active rồi tạo change set cập nhật cùng stack để thêm web tier. Worker chỉ đọc trạng thái/ARN pointer, không đọc giá trị secret. Không chạy trực tiếp full template với snapshot để bỏ qua quy trình này. Cấu hình nguồn được giữ cho những lần update tiếp theo.
+
+Inventory mở rộng CFN resource IDs thành instance/volume/ENI của ASG, task/ENI của ECS và ENI của EFS mount target. Mỗi record có parent ID, loại tài nguyên và thời điểm quan sát. F08 vẫn phải kiểm tra lại trạng thái thực tế và scan tag để tìm snapshot/nguồn giữ lại được tạo sau delete; lỗi AccessDenied không được xem như tài nguyên đã mất.
 
 Execution bị dừng hoặc timeout được EventBridge chuyển sang NEEDS_ATTENTION; worker không tự xóa stack update hoặc mở khóa cho tác vụ mới. Quản trị cần đối chiếu CloudFormation còn đang chạy, inventory và chính sách dữ liệu trước khi phục hồi tác vụ. Không force-unlock khi AWS còn tạo tài nguyên.

@@ -46,6 +46,8 @@ class Settings:
                 raise ValidationError("Platform hosted zone is invalid.")
             if not re.fullmatch(r"arn:aws:acm:[a-z0-9-]+:[0-9]{12}:certificate/[a-f0-9-]+", values["CertificateArn"]):
                 raise ValidationError("Platform ACM certificate ARN is invalid.")
+            if self.cfn_role_arn.startswith("arn:") and values["CertificateArn"].split(":")[4] != self.cfn_role_arn.split(":")[4]:
+                raise ValidationError("Platform certificate must use the deployment account.")
             values["DomainName"] = f"{env_id}.{values.pop('BaseDomain')}"
         if template_id in {"T03", "T04", "T05"}:
             import re

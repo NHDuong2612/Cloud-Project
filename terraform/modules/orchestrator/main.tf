@@ -45,12 +45,16 @@ resource "aws_iam_role_policy" "worker" {
     Statement = [
       { Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"], Resource = ["${aws_cloudwatch_log_group.worker.arn}:*", "${aws_cloudwatch_log_group.reconcile.arn}:*"] },
       { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem", "dynamodb:ConditionCheckItem"], Resource = var.control_table_arn },
-      { Effect = "Allow", Action = ["cloudformation:CreateChangeSet", "cloudformation:DescribeChangeSet", "cloudformation:ExecuteChangeSet", "cloudformation:DeleteChangeSet", "cloudformation:DescribeStacks", "cloudformation:ListStackResources", "cloudformation:DeleteStack"], Resource = ["${local.prefix}:cloudformation:${local.region}:${local.account}:stack/cloudhub-env-*/*", "${local.prefix}:cloudformation:${local.region}:${local.account}:changeSet/op-*/*"] },
+      { Effect = "Allow", Action = ["cloudformation:CreateChangeSet", "cloudformation:DescribeChangeSet", "cloudformation:ExecuteChangeSet", "cloudformation:DeleteChangeSet", "cloudformation:DescribeStacks", "cloudformation:ListStackResources", "cloudformation:DeleteStack", "cloudformation:TagResource", "cloudformation:UntagResource"], Resource = ["${local.prefix}:cloudformation:${local.region}:${local.account}:stack/cloudhub-env-*/*", "${local.prefix}:cloudformation:${local.region}:${local.account}:changeSet/op-*/*"] },
       { Effect = "Allow", Action = "iam:PassRole", Resource = var.cfn_role_arn, Condition = { StringEquals = { "iam:PassedToService" = "cloudformation.amazonaws.com" } } },
       { Effect = "Allow", Action = ["ssm:DescribeInstanceInformation", "elasticloadbalancing:DescribeTargetHealth"], Resource = "*" },
+      { Effect = "Allow", Action = ["ec2:DescribeInstances", "autoscaling:DescribeAutoScalingGroups", "ecs:ListTasks", "ecs:DescribeTasks", "elasticfilesystem:DescribeMountTargets"], Resource = "*", Condition = { StringEquals = { "aws:RequestedRegion" = local.region } } },
       { Effect = "Allow", Action = "ssm:SendCommand", Resource = "${local.prefix}:ssm:${local.region}::document/AWS-RunShellScript" },
       { Effect = "Allow", Action = "ssm:SendCommand", Resource = "${local.prefix}:ec2:${local.region}:${local.account}:instance/*", Condition = { StringEquals = { "ssm:resourceTag/Project" = "CloudHub" } } },
       { Effect = "Allow", Action = "ssm:GetCommandInvocation", Resource = "*" },
+      { Effect = "Allow", Action = ["rds:DescribeDBInstances", "rds:ModifyDBInstance"], Resource = "${local.prefix}:rds:${local.region}:${local.account}:db:cloudhub-env-*" },
+      { Effect = "Allow", Action = ["secretsmanager:CreateSecret", "secretsmanager:TagResource"], Resource = "${local.prefix}:secretsmanager:${local.region}:${local.account}:secret:rds!*" },
+      { Effect = "Allow", Action = "kms:DescribeKey", Resource = "${local.prefix}:kms:${local.region}:${local.account}:key/*" },
       { Effect = "Allow", Action = "states:DescribeExecution", Resource = "${local.prefix}:states:${local.region}:${local.account}:execution:${var.name_prefix}-deployment:*" },
       { Effect = "Allow", Action = "sqs:SendMessage", Resource = aws_sqs_queue.failures.arn }
     ]

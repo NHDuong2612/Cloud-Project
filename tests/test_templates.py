@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import cfnlint
 from pathlib import Path
 
 
@@ -78,3 +79,14 @@ def test_t06_separates_execution_and_data_roles_and_uses_ip_targets():
     assert template["Resources"]["Service"]["Properties"]["DeploymentConfiguration"]["DeploymentCircuitBreaker"]["Rollback"] is True
     data_policy = template["Resources"]["TaskRole"]["Properties"]["Policies"][0]["PolicyDocument"]
     assert "environments/${EnvironmentId}/data/*" in json.dumps(data_policy)
+
+
+def test_database_restore_first_stage_does_not_reference_unavailable_credentials():
+    from cloudhub.worker import database_restore_stage
+    for builder in (builders.t03, builders.t04):
+        template = database_restore_stage(builder())
+        assert template["Resources"]["Database"]["Properties"]["ManageMasterUserPassword"] is False
+        assert "MasterUserSecret.SecretArn" not in json.dumps(template)
+        assert "InstanceRole" not in template["Resources"]
+        assert "AppBundleKey" not in template["Parameters"]
+        assert not cfnlint.lint(json.dumps(template), regions=["ap-southeast-1"])

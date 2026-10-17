@@ -99,4 +99,5 @@ class DynamoStore:
                     "operation_id": op_id, "logical_id": resource["LogicalResourceId"],
                     "resource_type": resource["ResourceType"], "physical_id": physical,
                     "aws_status": resource["ResourceStatus"], "observed_at": now,
+                    "parent_physical_id": resource.get("ParentPhysicalId", ""),
                 })

@@ -296,7 +296,7 @@
           "Next": "Complete"
         }
       ],
-      "Default": "Health"
+      "Default": "PostProvision"
     },
     "Health": {
       "Type": "Task",
@@ -520,6 +520,71 @@
       "Type": "Fail",
       "Error": "CloudHubOperationFailed",
       "Cause": "Read the sanitized operation record and AWS resource inventory."
+    },
+    "PostProvision": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 75,
+      "Parameters": {
+        "FunctionName": "${WorkerArn}",
+        "Payload": {
+          "phase": "post_provision",
+          "environment_id.$": "$.environment_id",
+          "operation_id.$": "$.operation_id"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "RetryableDeploymentError"
+          ],
+          "IntervalSeconds": 2,
+          "BackoffRate": 2,
+          "MaxAttempts": 3,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "Recover"
+        }
+      ],
+      "Next": "PostProvisioned"
+    },
+    "PostProvisioned": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "ERROR",
+          "Next": "Recover"
+        },
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "WAIT",
+          "Next": "WaitCredentials"
+        },
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "CHANGESET",
+          "Next": "WaitChangeSet"
+        }
+      ],
+      "Default": "Health"
+    },
+    "WaitCredentials": {
+      "Type": "Wait",
+      "Seconds": 15,
+      "Next": "PostProvision"
     }
   }
 }
