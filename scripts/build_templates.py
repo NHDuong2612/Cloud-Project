@@ -172,7 +172,93 @@ def t03():
     return template
 
 
-BUILDERS = {"t01": t01, "t03": t03}
+def https_frontend(template, target_type="instance"):
+    template["Parameters"].update({
+        "PublicSubnetIds": {"Type": "List<AWS::EC2::Subnet::Id>"},
+        "CertificateArn": {"Type": "String", "AllowedPattern": "^arn:[^:]+:acm:[a-z0-9-]+:[0-9]{12}:certificate/[a-f0-9-]+$"},
+        "HostedZoneId": {"Type": "AWS::Route53::HostedZone::Id"},
+        "DomainName": {"Type": "String", "AllowedPattern": "^[a-f0-9]{32}\\.[a-z0-9.-]+$"},
+    })
+    template["Resources"].update({
+        "LoadBalancerSecurityGroup": resource("AWS::EC2::SecurityGroup", {
+            "VpcId": ref("VpcId"), "GroupDescription": "HTTPS entry for approved client network",
+            "SecurityGroupIngress": [{"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "CidrIp": ref("AllowedCidr")}],
+            "SecurityGroupEgress": [{"IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8080, "DestinationSecurityGroupId": ref("InstanceSecurityGroup")}], "Tags": tags(),
+        }, "Only HTTPS from the approved network; only application traffic to targets."),
+        "WebIngress": resource("AWS::EC2::SecurityGroupIngress", {"GroupId": ref("InstanceSecurityGroup"), "IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8080, "SourceSecurityGroupId": ref("LoadBalancerSecurityGroup")}, "Targets receive traffic only from their ALB."),
+        "LoadBalancer": resource("AWS::ElasticLoadBalancingV2::LoadBalancer", {
+            "Type": "application", "Scheme": "internet-facing", "Subnets": ref("PublicSubnetIds"), "SecurityGroups": [ref("LoadBalancerSecurityGroup")],
+            "LoadBalancerAttributes": [{"Key": "routing.http.drop_invalid_header_fields.enabled", "Value": "true"}, {"Key": "routing.http.desync_mitigation_mode", "Value": "strictest"}], "Tags": tags(),
+        }, "Two-AZ entry point with a certificate managed outside the session."),
+        "TargetGroup": resource("AWS::ElasticLoadBalancingV2::TargetGroup", {
+            "VpcId": ref("VpcId"), "Protocol": "HTTP", "Port": 8080, "TargetType": target_type,
+            "HealthCheckPath": "/health", "HealthCheckIntervalSeconds": 15, "HealthCheckTimeoutSeconds": 5, "HealthyThresholdCount": 2, "UnhealthyThresholdCount": 3,
+            "Matcher": {"HttpCode": "200"}, "TargetGroupAttributes": [{"Key": "deregistration_delay.timeout_seconds", "Value": "30"}], "Tags": tags(),
+        }, "Application readiness includes the workload's health contract."),
+        "Listener": resource("AWS::ElasticLoadBalancingV2::Listener", {
+            "LoadBalancerArn": ref("LoadBalancer"), "Port": 443, "Protocol": "HTTPS", "Certificates": [{"CertificateArn": ref("CertificateArn")}],
+            "SslPolicy": "ELBSecurityPolicy-TLS13-1-2-2021-06", "DefaultActions": [{"Type": "forward", "TargetGroupArn": ref("TargetGroup")}],
+        }, "TLS at the entry point; no plaintext public listener."),
+        "DNS": resource("AWS::Route53::RecordSet", {"HostedZoneId": ref("HostedZoneId"), "Name": ref("DomainName"), "Type": "A", "AliasTarget": {"DNSName": attr("LoadBalancer", "DNSName"), "HostedZoneId": attr("LoadBalancer", "CanonicalHostedZoneID")}}, "One hostname per session in the platform-owned zone."),
+    })
+
+
+def t04():
+    template = base("CloudHub T04 HTTPS web fleet with bounded Auto Scaling and private RDS; persistent data stays outside the EC2 fleet.")
+    template["Parameters"].pop("PublicSubnetId")
+    compute_parameters(template)
+    web_parameters(template)
+    template["Parameters"].update({
+        "MinInstances": {"Type": "Number", "Default": 1, "MinValue": 1, "MaxValue": 2},
+        "DesiredInstances": {"Type": "Number", "Default": 1, "MinValue": 1, "MaxValue": 3},
+        "MaxInstances": {"Type": "Number", "Default": 2, "MinValue": 2, "MaxValue": 3},
+        "TargetCPU": {"Type": "Number", "Default": 50, "MinValue": 20, "MaxValue": 80},
+    })
+    template["Resources"]["InstanceSecurityGroup"] = resource("AWS::EC2::SecurityGroup", {
+        "VpcId": ref("VpcId"), "GroupDescription": "CloudHub fleet; ALB ingress only",
+        "SecurityGroupEgress": [{"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "CidrIp": "0.0.0.0/0"}], "Tags": tags(),
+    }, "Fleet nodes have outbound TLS for bootstrap; inbound is added only from the ALB.")
+    database(template)
+    https_frontend(template)
+    crud_runtime(template)
+    template["Resources"]["InstanceRole"]["Properties"]["Policies"][0]["PolicyDocument"]["Statement"].append({"Effect": "Allow", "Action": "cloudformation:SignalResource", "Resource": ref("AWS::StackId")})
+    bootstrap = (ROOT / "scripts/assets/bootstrap-crud.sh").read_text()
+    signal = "/opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}"
+    bootstrap = bootstrap.replace("set -eu\n", "set -eu\ndnf install -y aws-cfn-bootstrap\ntrap '" + signal + "' EXIT\n", 1)
+    bootstrap += "\nfor attempt in $(seq 1 60); do\n  curl --fail --silent http://127.0.0.1:8080/health && break\n  sleep 5\ndone\ncurl --fail --silent http://127.0.0.1:8080/health\n"
+    data = instance_properties()
+    data.pop("IamInstanceProfile")
+    data["IamInstanceProfile"] = {"Name": ref("InstanceProfile")}
+    data["NetworkInterfaces"][0].pop("SubnetId")
+    data["NetworkInterfaces"][0]["Groups"] = data["NetworkInterfaces"][0].pop("GroupSet")
+    data["CreditSpecification"] = {"CpuCredits": "standard"}
+    data["UserData"] = {"Fn::Base64": sub(bootstrap)}
+    data.pop("Tags")
+    data["TagSpecifications"] = [{"ResourceType": "instance", "Tags": tags()}, {"ResourceType": "volume", "Tags": tags()}]
+    template["Resources"]["LaunchTemplate"] = resource("AWS::EC2::LaunchTemplate", {"LaunchTemplateData": data}, "A versioned launch template permits controlled rolling replacement.")
+    template["Resources"]["AutoScalingGroup"] = resource("AWS::AutoScaling::AutoScalingGroup", {
+        "VPCZoneIdentifier": ref("PublicSubnetIds"), "LaunchTemplate": {"LaunchTemplateId": ref("LaunchTemplate"), "Version": attr("LaunchTemplate", "LatestVersionNumber")},
+        "MinSize": ref("MinInstances"), "DesiredCapacity": ref("DesiredInstances"), "MaxSize": ref("MaxInstances"),
+        "HealthCheckType": "ELB", "HealthCheckGracePeriod": 240, "TargetGroupARNs": [ref("TargetGroup")],
+        "Tags": [{**x, "PropagateAtLaunch": True} for x in tags()],
+    }, "Fleet scales only within server-validated bounds; RDS owns durable data.", ["Use ELB health checks and signal readiness after the DB write/read probe."],
+        DependsOn=["Listener", "DatabaseIngress", "AppDatabaseEgress", "WebIngress"],
+        CreationPolicy={"ResourceSignal": {"Count": ref("DesiredInstances"), "Timeout": "PT15M"}},
+        UpdatePolicy={"AutoScalingRollingUpdate": {"MinInstancesInService": ref("MinInstances"), "MaxBatchSize": 1, "PauseTime": "PT15M", "WaitOnResourceSignals": True}})
+    template["Resources"]["ScalingPolicy"] = resource("AWS::AutoScaling::ScalingPolicy", {
+        "AutoScalingGroupName": ref("AutoScalingGroup"), "PolicyType": "TargetTrackingScaling",
+        "TargetTrackingConfiguration": {"PredefinedMetricSpecification": {"PredefinedMetricType": "ASGAverageCPUUtilization"}, "TargetValue": ref("TargetCPU")},
+    }, "CPU target tracking operates within the ASG maximum, never unlimited scale-out.")
+    template["Outputs"] = {
+        "EndpointUrl": {"Description": "Per-session HTTPS hostname", "Value": sub("https://${DomainName}")},
+        "TargetGroupArn": {"Description": "F04 checks healthy target count", "Value": ref("TargetGroup")},
+        "AutoScalingGroupName": {"Description": "Fleet for monitoring and cleanup verification", "Value": ref("AutoScalingGroup")},
+        "DatabaseIdentifier": {"Description": "Persistent data source for F06", "Value": ref("Database")},
+    }
+    return template
+
+
+BUILDERS = {"t01": t01, "t03": t03, "t04": t04}
 
 
 def main():

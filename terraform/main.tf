@@ -23,14 +23,20 @@ module "storage" {
 module "platform" {
   source = "./modules/platform"
 
-  count               = var.enable_platform ? 1 : 0
-  name_prefix         = local.name_prefix
-  common_tags         = local.common_tags
-  recovery_bucket_arn = module.storage.bucket_arn
+  count                   = var.enable_platform ? 1 : 0
+  name_prefix             = local.name_prefix
+  common_tags             = local.common_tags
+  recovery_bucket_arn     = module.storage.bucket_arn
+  allowed_hosted_zone_ids = var.allowed_hosted_zone_ids
+  allowed_base_domain     = var.allowed_base_domain
 }
 
 resource "terraform_data" "orchestrator_configuration" {
   lifecycle {
+    precondition {
+      condition     = length(var.allowed_hosted_zone_ids) == 0 || var.allowed_base_domain != ""
+      error_message = "DNS permissions require an allowed base domain."
+    }
     precondition {
       condition     = !var.enable_orchestrator || (var.enable_platform && can(regex("^worker/[a-f0-9]{64}\\.zip$", var.worker_s3_key)))
       error_message = "Orchestrator requires enable_platform and an immutable worker/<sha256>.zip key."

@@ -35,6 +35,13 @@ class Settings:
             for key in ("CertificateArn", "HostedZoneId", "BaseDomain"):
                 if not values.get(key):
                     raise ValidationError(f"Platform is missing {key}.")
+            import re
+            if not re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", values["BaseDomain"]):
+                raise ValidationError("Platform base domain is invalid.")
+            if not re.fullmatch(r"Z[A-Z0-9]+", values["HostedZoneId"]):
+                raise ValidationError("Platform hosted zone is invalid.")
+            if not re.fullmatch(r"arn:aws:acm:[a-z0-9-]+:[0-9]{12}:certificate/[a-f0-9-]+", values["CertificateArn"]):
+                raise ValidationError("Platform ACM certificate ARN is invalid.")
             values["DomainName"] = f"{env_id}.{values.pop('BaseDomain')}"
         if template_id == "T06":
             image = (self.images or {}).get(config["image_alias"])

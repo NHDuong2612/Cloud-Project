@@ -90,11 +90,28 @@ resource "aws_iam_policy" "workload_boundary" {
       { Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = "*" },
       { Effect = "Allow", Action = ["ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"], Resource = "${local.arn_prefix}:ecr:${local.region}:${local.account_id}:repository/*" },
       { Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"], Resource = "${local.arn_prefix}:logs:${local.region}:${local.account_id}:log-group:/cloudhub/environments/*:*" }
+      , { Effect = "Allow", Action = "cloudformation:SignalResource", Resource = "${local.arn_prefix}:cloudformation:${local.region}:${local.account_id}:stack/cloudhub-env-*/*" }
       ], var.recovery_bucket_arn == null ? [] : [
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject"], Resource = "${var.recovery_bucket_arn}/environments/*" }
     ])
   })
   tags = var.common_tags
+}
+
+resource "aws_iam_role_policy" "environment_dns" {
+  count = length(var.allowed_hosted_zone_ids) > 0 ? 1 : 0
+  role  = aws_iam_role.cloudformation.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = "route53:ChangeResourceRecordSets", Resource = [for zone in var.allowed_hosted_zone_ids : "${local.arn_prefix}:route53:::hostedzone/${zone}"], Condition = {
+        "ForAllValues:StringLike" = { "route53:ChangeResourceRecordSetsNormalizedRecordNames" = ["*.${var.allowed_base_domain}"] },
+        "Null"                    = { "route53:ChangeResourceRecordSetsNormalizedRecordNames" = "false" }
+      } },
+      { Effect = "Allow", Action = ["route53:GetHostedZone", "route53:ListResourceRecordSets"], Resource = [for zone in var.allowed_hosted_zone_ids : "${local.arn_prefix}:route53:::hostedzone/${zone}"] },
+      { Effect = "Allow", Action = "route53:GetChange", Resource = "${local.arn_prefix}:route53:::change/*" }
+    ]
+  })
 }
 
 resource "aws_iam_role" "cloudformation" {

@@ -43,6 +43,23 @@ variable "approved_images" {
   default     = {}
 }
 
+variable "allowed_hosted_zone_ids" {
+  type    = list(string)
+  default = []
+  validation {
+    condition     = alltrue([for id in var.allowed_hosted_zone_ids : can(regex("^Z[A-Z0-9]+$", id))])
+    error_message = "Use Route53 hosted zone IDs without path prefixes."
+  }
+}
+variable "allowed_base_domain" {
+  type    = string
+  default = ""
+  validation {
+    condition     = var.allowed_base_domain == "" || can(regex("^[a-z0-9.-]+\\.[a-z]{2,63}$", var.allowed_base_domain))
+    error_message = "Use a lowercase DNS base domain."
+  }
+}
+
 variable "project_name" {
   description = "Resource name prefix for CloudHub."
   type        = string

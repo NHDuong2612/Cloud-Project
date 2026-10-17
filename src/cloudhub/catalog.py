@@ -62,8 +62,8 @@ TEMPLATES = {
     "T02": Template("T02", "Website tĩnh", "TV4", {}),
     "T03": Template("T03", "Web và cơ sở dữ liệu", "TV3", {**COMPUTE, **DATABASE, **ACCESS}, ("allowed_cidr",), "RDS application data; TV4 snapshot/restore, application code is reproducible"),
     "T04": Template("T04", "Web chịu tải cao", "TV3", {
-        **COMPUTE, **DATABASE, **ACCESS, "min_instances": integer(1, 1, 3),
-        "desired_instances": integer(1, 1, 3), "max_instances": integer(2, 1, 3),
+        **COMPUTE, **DATABASE, **ACCESS, "min_instances": integer(1, 1, 2),
+        "desired_instances": integer(1, 1, 3), "max_instances": integer(2, 2, 3),
         "target_cpu": integer(50, 20, 80),
     }, ("allowed_cidr",), "RDS application data; EC2 fleet is stateless"),
     "T05": Template("T05", "Website trên máy chủ", "TV1/TV3", {**COMPUTE, **ACCESS}, ("allowed_cidr",), "EBS web content; TV4 backup/restore"),
@@ -127,6 +127,8 @@ def validate_config(template_id, version, config):
                 raise ValidationError("allowed_cidr must be IPv4 /24 or narrower.")
     if template_id == "T04" and not result["min_instances"] <= result["desired_instances"] <= result["max_instances"]:
         raise ValidationError("Scaling requires min <= desired <= max.")
+    if template_id == "T04" and result["min_instances"] >= result["max_instances"]:
+        raise ValidationError("ASG maximum must leave capacity for rolling updates.")
     if template_id == "T06" and result["cpu"] == 512 and result["memory_mb"] < 1024:
         raise ValidationError("512 CPU units require at least 1024 MB memory.")
     return result

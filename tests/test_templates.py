@@ -45,3 +45,14 @@ def test_t03_database_is_private_and_restore_preserves_data():
     assert database["UpdateReplacePolicy"] == "Retain"
     ingress = template["Resources"]["DatabaseIngress"]["Properties"]
     assert "CidrIp" not in ingress and ingress["SourceSecurityGroupId"] == {"Ref": "InstanceSecurityGroup"}
+
+
+def test_t04_uses_elb_health_and_signal_gated_rolling_updates():
+    template = builders.t04()
+    group = template["Resources"]["AutoScalingGroup"]
+    assert group["Properties"]["HealthCheckType"] == "ELB"
+    assert group["UpdatePolicy"]["AutoScalingRollingUpdate"]["WaitOnResourceSignals"] is True
+    assert group["CreationPolicy"]["ResourceSignal"]["Timeout"] == "PT15M"
+    assert template["Parameters"]["MaxInstances"]["MaxValue"] == 3
+    assert template["Resources"]["Listener"]["Properties"]["Protocol"] == "HTTPS"
+    assert template["Resources"]["TargetGroup"]["Properties"]["HealthCheckPath"] == "/health"
