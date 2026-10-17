@@ -9,7 +9,7 @@ Mỗi hạng mục có một commit riêng, được đẩy lên GitHub trước
 | 2 | F02 | Danh mục phiên bản mẫu, schema đầu vào, hợp đồng với TV2/TV4 | Đã viết catalog/schema và kiểm thử; mẫu chỉ bật sau kiểm chứng AWS |
 | 3 | A07 / F04 | Step Functions, worker CloudFormation, khóa tác vụ, health check, rollback, inventory | Đã viết worker/workflow và IaC; kiểm thử cục bộ và ASL AWS đạt; chưa chạy vòng đời AWS |
 | 4 | A10 / T01 | Linux EC2/EBS qua SSM | Đã có template và kiểm thử; chờ kiểm chứng vòng đời với TV4 trên AWS |
-| 5 | A12 / T03 | Web CRUD và RDS riêng tư | Chưa triển khai |
+| 5 | A12 / T03 | Web CRUD và RDS riêng tư | Đã có template, demo CRUD và kiểm thử; chờ kiểm chứng RDS/restore thật |
 | 6 | A13 / T04 | HTTPS ALB, ASG có giới hạn, RDS | Chưa triển khai |
 | 7 | A14 / T05 | Web server EC2, phối hợp TV1 | Chưa triển khai |
 | 8 | A16 / T06 | ECS Fargate với image được duyệt | Chưa triển khai |

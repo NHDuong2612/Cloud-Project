@@ -88,7 +88,8 @@ class Worker:
                 if action != "create" and config.get(key, 0) < env["config"].get(key, 0):
                     raise ValidationError("Storage shrink is not supported.")
             self.settings.parameters(env["template_id"], env_id, config)
-            self.restore_parameters(env_id, op_id, env)
+            if action == "create":
+                self.restore_parameters(env_id, op_id, env)
         else:
             self.check_delete(env_id, op_id, env, op)
         status = {"create": "PROVISIONING", "plan_update": "PLANNING", "update": "UPDATING", "delete": "DELETING"}[action]
@@ -170,6 +171,8 @@ class Worker:
         parameters = self.settings.parameters(template.id, env_id, config)
         if action == "create":
             parameters.update(self.restore_parameters(env_id, op_id, env))
+        else:
+            parameters.update(env.get("restore_parameters", {}))
         required = {k for k, v in schema["Parameters"].items() if "Default" not in v}
         if required - set(parameters):
             raise ValidationError("Platform configuration is missing required template parameters.")
@@ -281,6 +284,7 @@ class Worker:
             fields = {"stack_id": op["stack_id"], "outputs": op.get("outputs", {}), "config": op.get("config", env["config"])}
             if op["action"] == "create":
                 fields.update(ready_at=now, expires_at_epoch=now + int(env["duration_minutes"]) * 60)
+                fields["restore_parameters"] = self.restore_parameters(env_id, op_id, env)
             self.store.finish(env, op, "READY", "SUCCEEDED", now, **fields)
         return {"outcome": "DONE"}
 

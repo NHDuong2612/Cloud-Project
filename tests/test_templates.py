@@ -33,3 +33,15 @@ def test_no_secrets_in_outputs_and_each_resource_has_context():
         assert all("secret" not in k.lower() and "password" not in k.lower() for k in template["Outputs"])
         for resource in template["Resources"].values():
             assert resource["Metadata"]["com.aws.cloudformation.Context"]["why"]
+
+
+def test_t03_database_is_private_and_restore_preserves_data():
+    template = builders.t03()
+    database = template["Resources"]["Database"]
+    assert database["Properties"]["PubliclyAccessible"] is False
+    assert database["Properties"]["ManageMasterUserPassword"] is True
+    assert "MasterUserPassword" not in database["Properties"]
+    assert database["DeletionPolicy"] == "Snapshot"
+    assert database["UpdateReplacePolicy"] == "Retain"
+    ingress = template["Resources"]["DatabaseIngress"]["Properties"]
+    assert "CidrIp" not in ingress and ingress["SourceSecurityGroupId"] == {"Ref": "InstanceSecurityGroup"}

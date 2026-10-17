@@ -24,7 +24,8 @@ rule database_data_is_protected when %databases !empty {
     %databases {
         DeletionPolicy IN ['Retain', 'Snapshot']
         UpdateReplacePolicy == 'Retain'
-        Properties.StorageEncrypted == true
+        Properties.StorageEncrypted == true OR
+        Properties.StorageEncrypted.'Fn::If'[2] == true
         Properties.PubliclyAccessible == false
         Properties.ManageMasterUserPassword == true
     }

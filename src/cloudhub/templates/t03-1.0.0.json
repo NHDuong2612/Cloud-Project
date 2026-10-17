@@ -1,0 +1,577 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "CloudHub T03 CRUD web and private PostgreSQL session; per-environment identity and managed DB credentials.",
+  "Metadata": {
+    "AWSToolsMetrics": {
+      "AWSAgentToolkit": "aws-cloudformation@3"
+    }
+  },
+  "Parameters": {
+    "EnvironmentId": {
+      "Type": "String",
+      "AllowedPattern": "^[a-f0-9]{32}$"
+    },
+    "VpcId": {
+      "Type": "AWS::EC2::VPC::Id"
+    },
+    "PublicSubnetId": {
+      "Type": "AWS::EC2::Subnet::Id"
+    },
+    "WorkloadBoundaryArn": {
+      "Type": "String",
+      "AllowedPattern": "^arn:[^:]+:iam::[0-9]{12}:policy/.+$"
+    },
+    "AmiParameter": {
+      "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+      "Default": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    "InstanceType": {
+      "Type": "String",
+      "Default": "t3.micro",
+      "AllowedValues": [
+        "t3.micro",
+        "t3.small"
+      ]
+    },
+    "VolumeSize": {
+      "Type": "Number",
+      "Default": 16,
+      "MinValue": 8,
+      "MaxValue": 64
+    },
+    "AllowedCidr": {
+      "Type": "String",
+      "AllowedPattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/(2[4-9]|3[0-2])$"
+    },
+    "CodeBucket": {
+      "Type": "String",
+      "AllowedPattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    },
+    "AppBundleKey": {
+      "Type": "String",
+      "AllowedPattern": "^apps/[a-z0-9_-]+/[a-f0-9]{64}\\.zip$"
+    },
+    "PrivateSubnetIds": {
+      "Type": "List<AWS::EC2::Subnet::Id>"
+    },
+    "DBInstanceClass": {
+      "Type": "String",
+      "Default": "db.t3.micro",
+      "AllowedValues": [
+        "db.t3.micro",
+        "db.t4g.micro"
+      ]
+    },
+    "DBStorage": {
+      "Type": "Number",
+      "Default": 20,
+      "MinValue": 20,
+      "MaxValue": 100
+    },
+    "DBSnapshotIdentifier": {
+      "Type": "String",
+      "Default": "",
+      "MaxLength": 256
+    },
+    "DBEngineVersion": {
+      "Type": "String",
+      "Default": "16.15",
+      "AllowedPattern": "^16\\.[0-9]+$"
+    }
+  },
+  "Resources": {
+    "InstanceSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "The demo web port is scoped to the configured client network.",
+          "must": [
+            "No SSH or public PostgreSQL ingress."
+          ]
+        }
+      },
+      "Properties": {
+        "GroupDescription": "CloudHub web demo from approved client CIDR",
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 8080,
+            "ToPort": 8080,
+            "CidrIp": {
+              "Ref": "AllowedCidr"
+            }
+          }
+        ],
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ]
+      }
+    },
+    "DatabaseSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "DB is reached only by the application's security group.",
+          "must": [
+            "Never open PostgreSQL to a CIDR."
+          ]
+        }
+      },
+      "Properties": {
+        "GroupDescription": "Private CloudHub RDS; app group only",
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ]
+      }
+    },
+    "DatabaseIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Separate ingress avoids a security-group dependency cycle.",
+          "must": []
+        }
+      },
+      "Properties": {
+        "GroupId": {
+          "Ref": "DatabaseSecurityGroup"
+        },
+        "IpProtocol": "tcp",
+        "FromPort": 5432,
+        "ToPort": 5432,
+        "SourceSecurityGroupId": {
+          "Ref": "InstanceSecurityGroup"
+        }
+      }
+    },
+    "AppDatabaseEgress": {
+      "Type": "AWS::EC2::SecurityGroupEgress",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Application DB traffic stays inside the VPC.",
+          "must": []
+        }
+      },
+      "Properties": {
+        "GroupId": {
+          "Ref": "InstanceSecurityGroup"
+        },
+        "IpProtocol": "tcp",
+        "FromPort": 5432,
+        "ToPort": 5432,
+        "DestinationSecurityGroupId": {
+          "Ref": "DatabaseSecurityGroup"
+        }
+      }
+    },
+    "DatabaseSubnets": {
+      "Type": "AWS::RDS::DBSubnetGroup",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "RDS uses private subnets; Single-AZ DB still needs a two-AZ subnet group.",
+          "must": []
+        }
+      },
+      "Properties": {
+        "DBSubnetGroupDescription": "CloudHub private DB subnets across two AZs",
+        "SubnetIds": {
+          "Ref": "PrivateSubnetIds"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ]
+      }
+    },
+    "DatabaseParameters": {
+      "Type": "AWS::RDS::DBParameterGroup",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "The demo requires verified TLS for DB connections.",
+          "must": []
+        }
+      },
+      "Properties": {
+        "Description": "Require TLS for CloudHub PostgreSQL",
+        "Family": "postgres16",
+        "Parameters": {
+          "rds.force_ssl": "1"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ]
+      }
+    },
+    "Database": {
+      "Type": "AWS::RDS::DBInstance",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Dedicated per-session database; credentials managed by RDS. Restore inherits source encryption.",
+          "must": [
+            "F06 may approve only encrypted PostgreSQL 16 snapshots containing the cloudhub schema.",
+            "F08 must inventory final snapshots and their ongoing storage charges."
+          ]
+        }
+      },
+      "Properties": {
+        "DBInstanceIdentifier": {
+          "Fn::Sub": "${AWS::StackName}-db"
+        },
+        "Engine": "postgres",
+        "EngineVersion": {
+          "Ref": "DBEngineVersion"
+        },
+        "EngineLifecycleSupport": "open-source-rds-extended-support-disabled",
+        "DBInstanceClass": {
+          "Ref": "DBInstanceClass"
+        },
+        "AllocatedStorage": {
+          "Fn::If": [
+            "HasDBSnapshot",
+            {
+              "Ref": "AWS::NoValue"
+            },
+            {
+              "Ref": "DBStorage"
+            }
+          ]
+        },
+        "StorageType": "gp3",
+        "StorageEncrypted": {
+          "Fn::If": [
+            "HasDBSnapshot",
+            {
+              "Ref": "AWS::NoValue"
+            },
+            true
+          ]
+        },
+        "DBName": {
+          "Fn::If": [
+            "HasDBSnapshot",
+            {
+              "Ref": "AWS::NoValue"
+            },
+            "cloudhub"
+          ]
+        },
+        "MasterUsername": {
+          "Fn::If": [
+            "HasDBSnapshot",
+            {
+              "Ref": "AWS::NoValue"
+            },
+            "cloudhub_admin"
+          ]
+        },
+        "ManageMasterUserPassword": true,
+        "DBSnapshotIdentifier": {
+          "Fn::If": [
+            "HasDBSnapshot",
+            {
+              "Ref": "DBSnapshotIdentifier"
+            },
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "DBSubnetGroupName": {
+          "Ref": "DatabaseSubnets"
+        },
+        "DBParameterGroupName": {
+          "Ref": "DatabaseParameters"
+        },
+        "VPCSecurityGroups": [
+          {
+            "Ref": "DatabaseSecurityGroup"
+          }
+        ],
+        "PubliclyAccessible": false,
+        "MultiAZ": false,
+        "BackupRetentionPeriod": 1,
+        "CopyTagsToSnapshot": true,
+        "DeletionProtection": false,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ]
+      },
+      "DeletionPolicy": "Snapshot",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "InstanceRole": {
+      "Type": "AWS::IAM::Role",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Dedicated instance identity; SSM avoids inbound SSH.",
+          "must": [
+            "Keep the platform boundary and environment-specific resource policies."
+          ]
+        }
+      },
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${AWS::StackName}-instance"
+        },
+        "Path": "/cloudhub/workloads/",
+        "PermissionsBoundary": {
+          "Ref": "WorkloadBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "environment-runtime",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ssm:UpdateInstanceInformation",
+                    "ssmmessages:CreateControlChannel",
+                    "ssmmessages:CreateDataChannel",
+                    "ssmmessages:OpenControlChannel",
+                    "ssmmessages:OpenDataChannel"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "s3:GetObject",
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:s3:::${CodeBucket}/${AppBundleKey}"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "secretsmanager:GetSecretValue",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "Database",
+                      "MasterUserSecret.SecretArn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ]
+      }
+    },
+    "InstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Attach the environment role without static credentials.",
+          "must": []
+        }
+      },
+      "Properties": {
+        "InstanceProfileName": {
+          "Fn::Sub": "${AWS::StackName}-profile"
+        },
+        "Path": "/cloudhub/workloads/",
+        "Roles": [
+          {
+            "Ref": "InstanceRole"
+          }
+        ]
+      }
+    },
+    "Instance": {
+      "Type": "AWS::EC2::Instance",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Stateless app code is downloaded from an immutable trusted S3 artifact.",
+          "must": [
+            "No secret values in user data or logs."
+          ]
+        }
+      },
+      "Properties": {
+        "ImageId": {
+          "Ref": "AmiParameter"
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "IamInstanceProfile": {
+          "Ref": "InstanceProfile"
+        },
+        "CreditSpecification": {
+          "CPUCredits": "standard"
+        },
+        "MetadataOptions": {
+          "HttpTokens": "required",
+          "HttpEndpoint": "enabled",
+          "HttpPutResponseHopLimit": 1
+        },
+        "NetworkInterfaces": [
+          {
+            "DeviceIndex": "0",
+            "AssociatePublicIpAddress": true,
+            "SubnetId": {
+              "Ref": "PublicSubnetId"
+            },
+            "GroupSet": [
+              {
+                "Ref": "InstanceSecurityGroup"
+              }
+            ]
+          }
+        ],
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+              "VolumeType": "gp3",
+              "VolumeSize": {
+                "Ref": "VolumeSize"
+              },
+              "Encrypted": true,
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Sub": "#!/bin/bash\nset -eu\ndnf install -y python3-pip\nid cloudhub >/dev/null 2>&1 || useradd --system --home-dir /opt/cloudhub --shell /sbin/nologin cloudhub\ninstall -d -m 755 /opt/cloudhub\npython3 -m venv /opt/cloudhub/venv\n/opt/cloudhub/venv/bin/pip install 'boto3>=1.35,<2' 'psycopg[binary]>=3.2,<4'\n/opt/cloudhub/venv/bin/python -c 'import boto3; boto3.client(\"s3\", region_name=\"${AWS::Region}\").download_file(\"${CodeBucket}\", \"${AppBundleKey}\", \"/opt/cloudhub/application.zip\")'\n/opt/cloudhub/venv/bin/python -m zipfile -e /opt/cloudhub/application.zip /opt/cloudhub/application\ncurl --fail --silent --show-error https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem -o /opt/cloudhub/rds-ca.pem\ncat > /opt/cloudhub/environment <<'CONFIG'\nDB_HOST=${Database.Endpoint.Address}\nDB_SECRET_ARN=${Database.MasterUserSecret.SecretArn}\nDB_CA_FILE=/opt/cloudhub/rds-ca.pem\nAWS_DEFAULT_REGION=${AWS::Region}\nPORT=8080\nPYTHONDONTWRITEBYTECODE=1\nCONFIG\nchown root:cloudhub /opt/cloudhub/environment\nchmod 640 /opt/cloudhub/environment\ncat > /etc/systemd/system/cloudhub.service <<'SERVICE'\n[Unit]\nDescription=CloudHub CRUD demo\nAfter=network-online.target\nWants=network-online.target\n[Service]\nUser=cloudhub\nGroup=cloudhub\nEnvironmentFile=/opt/cloudhub/environment\nWorkingDirectory=/opt/cloudhub/application\nExecStart=/opt/cloudhub/venv/bin/python /opt/cloudhub/application/server.py\nRestart=always\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\n[Install]\nWantedBy=multi-user.target\nSERVICE\nsystemctl daemon-reload\nsystemctl enable --now cloudhub\n"
+          }
+        }
+      },
+      "DependsOn": [
+        "DatabaseIngress",
+        "AppDatabaseEgress"
+      ],
+      "DeletionPolicy": "Delete",
+      "UpdateReplacePolicy": "Retain"
+    }
+  },
+  "Outputs": {
+    "InstanceId": {
+      "Description": "App instance and SSM probe target",
+      "Value": {
+        "Ref": "Instance"
+      }
+    },
+    "EndpointUrl": {
+      "Description": "CIDR-restricted HTTP demo; use an SSM tunnel on untrusted networks",
+      "Value": {
+        "Fn::Sub": "http://${Instance.PublicIp}:8080"
+      }
+    },
+    "DatabaseIdentifier": {
+      "Description": "Database for F06 snapshot/restore",
+      "Value": {
+        "Ref": "Database"
+      }
+    }
+  },
+  "Conditions": {
+    "HasDBSnapshot": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "DBSnapshotIdentifier"
+            },
+            ""
+          ]
+        }
+      ]
+    }
+  }
+}

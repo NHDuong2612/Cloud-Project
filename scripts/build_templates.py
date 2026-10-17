@@ -105,7 +105,74 @@ def t01():
     return template
 
 
-BUILDERS = {"t01": t01}
+def web_parameters(template):
+    template["Parameters"].update({
+        "AllowedCidr": {"Type": "String", "AllowedPattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/(2[4-9]|3[0-2])$"},
+        "CodeBucket": {"Type": "String", "AllowedPattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"},
+        "AppBundleKey": {"Type": "String", "AllowedPattern": "^apps/[a-z0-9_-]+/[a-f0-9]{64}\\.zip$"},
+    })
+
+
+def database(template):
+    template["Parameters"].update({
+        "PrivateSubnetIds": {"Type": "List<AWS::EC2::Subnet::Id>"},
+        "DBInstanceClass": {"Type": "String", "Default": "db.t3.micro", "AllowedValues": ["db.t3.micro", "db.t4g.micro"]},
+        "DBStorage": {"Type": "Number", "Default": 20, "MinValue": 20, "MaxValue": 100},
+        "DBSnapshotIdentifier": {"Type": "String", "Default": "", "MaxLength": 256},
+        "DBEngineVersion": {"Type": "String", "Default": "16.15", "AllowedPattern": "^16\\.[0-9]+$"},
+    })
+    template.setdefault("Conditions", {})["HasDBSnapshot"] = {"Fn::Not": [{"Fn::Equals": [ref("DBSnapshotIdentifier"), ""]}]}
+    new_only = lambda value: {"Fn::If": ["HasDBSnapshot", ref("AWS::NoValue"), value]}
+    template["Resources"].update({
+        "DatabaseSecurityGroup": resource("AWS::EC2::SecurityGroup", {"GroupDescription": "Private CloudHub RDS; app group only", "VpcId": ref("VpcId"), "Tags": tags()}, "DB is reached only by the application's security group.", ["Never open PostgreSQL to a CIDR."]),
+        "DatabaseIngress": resource("AWS::EC2::SecurityGroupIngress", {"GroupId": ref("DatabaseSecurityGroup"), "IpProtocol": "tcp", "FromPort": 5432, "ToPort": 5432, "SourceSecurityGroupId": ref("InstanceSecurityGroup")}, "Separate ingress avoids a security-group dependency cycle."),
+        "AppDatabaseEgress": resource("AWS::EC2::SecurityGroupEgress", {"GroupId": ref("InstanceSecurityGroup"), "IpProtocol": "tcp", "FromPort": 5432, "ToPort": 5432, "DestinationSecurityGroupId": ref("DatabaseSecurityGroup")}, "Application DB traffic stays inside the VPC."),
+        "DatabaseSubnets": resource("AWS::RDS::DBSubnetGroup", {"DBSubnetGroupDescription": "CloudHub private DB subnets across two AZs", "SubnetIds": ref("PrivateSubnetIds"), "Tags": tags()}, "RDS uses private subnets; Single-AZ DB still needs a two-AZ subnet group."),
+        "DatabaseParameters": resource("AWS::RDS::DBParameterGroup", {"Description": "Require TLS for CloudHub PostgreSQL", "Family": "postgres16", "Parameters": {"rds.force_ssl": "1"}, "Tags": tags()}, "The demo requires verified TLS for DB connections."),
+        "Database": resource("AWS::RDS::DBInstance", {
+            "DBInstanceIdentifier": sub("${AWS::StackName}-db"), "Engine": "postgres", "EngineVersion": ref("DBEngineVersion"),
+            "EngineLifecycleSupport": "open-source-rds-extended-support-disabled",
+            "DBInstanceClass": ref("DBInstanceClass"), "AllocatedStorage": new_only(ref("DBStorage")), "StorageType": "gp3", "StorageEncrypted": new_only(True),
+            "DBName": new_only("cloudhub"), "MasterUsername": new_only("cloudhub_admin"), "ManageMasterUserPassword": True,
+            "DBSnapshotIdentifier": {"Fn::If": ["HasDBSnapshot", ref("DBSnapshotIdentifier"), ref("AWS::NoValue")]},
+            "DBSubnetGroupName": ref("DatabaseSubnets"), "DBParameterGroupName": ref("DatabaseParameters"), "VPCSecurityGroups": [ref("DatabaseSecurityGroup")],
+            "PubliclyAccessible": False, "MultiAZ": False, "BackupRetentionPeriod": 1, "CopyTagsToSnapshot": True, "DeletionProtection": False, "Tags": tags(),
+        }, "Dedicated per-session database; credentials managed by RDS. Restore inherits source encryption.",
+            ["F06 may approve only encrypted PostgreSQL 16 snapshots containing the cloudhub schema.", "F08 must inventory final snapshots and their ongoing storage charges."],
+            DeletionPolicy="Snapshot", UpdateReplacePolicy="Retain"),
+    })
+
+
+def crud_runtime(template):
+    instance_role(template, [
+        {"Effect": "Allow", "Action": "s3:GetObject", "Resource": sub("arn:${AWS::Partition}:s3:::${CodeBucket}/${AppBundleKey}")},
+        {"Effect": "Allow", "Action": "secretsmanager:GetSecretValue", "Resource": attr("Database", "MasterUserSecret.SecretArn")},
+    ])
+    return {"Fn::Base64": sub((ROOT / "scripts/assets/bootstrap-crud.sh").read_text())}
+
+
+def t03():
+    template = base("CloudHub T03 CRUD web and private PostgreSQL session; per-environment identity and managed DB credentials.")
+    compute_parameters(template)
+    web_parameters(template)
+    template["Resources"]["InstanceSecurityGroup"] = resource("AWS::EC2::SecurityGroup", {
+        "GroupDescription": "CloudHub web demo from approved client CIDR", "VpcId": ref("VpcId"),
+        "SecurityGroupIngress": [{"IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8080, "CidrIp": ref("AllowedCidr")}],
+        "SecurityGroupEgress": [{"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "CidrIp": "0.0.0.0/0"}], "Tags": tags(),
+    }, "The demo web port is scoped to the configured client network.", ["No SSH or public PostgreSQL ingress."])
+    database(template)
+    properties = instance_properties()
+    properties["UserData"] = crud_runtime(template)
+    template["Resources"]["Instance"] = resource("AWS::EC2::Instance", properties, "Stateless app code is downloaded from an immutable trusted S3 artifact.", ["No secret values in user data or logs."], DependsOn=["DatabaseIngress", "AppDatabaseEgress"], DeletionPolicy="Delete", UpdateReplacePolicy="Retain")
+    template["Outputs"] = {
+        "InstanceId": {"Description": "App instance and SSM probe target", "Value": ref("Instance")},
+        "EndpointUrl": {"Description": "CIDR-restricted HTTP demo; use an SSM tunnel on untrusted networks", "Value": sub("http://${Instance.PublicIp}:8080")},
+        "DatabaseIdentifier": {"Description": "Database for F06 snapshot/restore", "Value": ref("Database")},
+    }
+    return template
+
+
+BUILDERS = {"t01": t01, "t03": t03}
 
 
 def main():
