@@ -3,6 +3,21 @@ variable "aws_region" {
   type        = string
 }
 
+variable "aws_account_id" {
+  description = "Expected AWS account; prevents deployment into the wrong account."
+  type        = string
+  validation {
+    condition     = can(regex("^[0-9]{12}$", var.aws_account_id))
+    error_message = "aws_account_id must contain twelve digits."
+  }
+}
+
+variable "enable_platform" {
+  description = "Create the TV3 control table, deployment bucket and bounded execution roles."
+  type        = bool
+  default     = false
+}
+
 variable "project_name" {
   description = "Resource name prefix for CloudHub."
   type        = string

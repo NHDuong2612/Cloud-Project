@@ -5,7 +5,7 @@ Mỗi hạng mục có một commit riêng, được đẩy lên GitHub trước
 | Thứ tự | Hạng mục | Phạm vi | Trạng thái |
 | --- | --- | --- | --- |
 | 0 | Chuyển đề tài | Tách state CloudRescue; giữ lại mạng và S3 dùng được | Đã dọn mã |
-| 1 | A03 | IaC nền tảng TV3, cấu hình triển khai và kiểm tra quyền/quota | Chưa triển khai |
+| 1 | A03 | IaC nền tảng TV3, cấu hình triển khai và kiểm tra quyền/quota | Terraform validate đạt, 3 kiểm thử đạt, preflight AWS chỉ đọc đạt; chưa apply |
 | 2 | F02 | Danh mục phiên bản mẫu, schema đầu vào, hợp đồng với TV2/TV4 | Chưa triển khai |
 | 3 | A07 / F04 | Step Functions, worker CloudFormation, khóa tác vụ, health check, rollback, inventory | Chưa triển khai |
 | 4 | A10 / T01 | Linux EC2/EBS qua SSM | Chưa triển khai |

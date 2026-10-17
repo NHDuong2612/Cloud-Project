@@ -1,5 +1,6 @@
 # Copy to terraform.tfvars and set values for the team's AWS account.
 aws_region = "ap-southeast-1"
+aws_account_id = "<12_DIGIT_GROUP_ACCOUNT_ID>"
 owner      = "nhom-1"
 
 project_name = "cloudhub"
@@ -8,6 +9,7 @@ environment  = "dev"
 # Keep disabled until the team reviews the plan and cost.
 enable_network = false
 enable_storage = false
+enable_platform = false
 
 vpc_cidr                = "10.30.0.0/16"
 public_subnet_cidrs     = ["10.30.1.0/24", "10.30.2.0/24"]

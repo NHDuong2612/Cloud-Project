@@ -74,3 +74,27 @@ resource "aws_s3_bucket_lifecycle_configuration" "recovery" {
     }
   }
 }
+
+data "aws_iam_policy_document" "tls_only" {
+  count = var.enable_storage ? 1 : 0
+  statement {
+    effect    = "Deny"
+    actions   = ["s3:*"]
+    resources = [aws_s3_bucket.recovery[0].arn, "${aws_s3_bucket.recovery[0].arn}/*"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "tls_only" {
+  count  = var.enable_storage ? 1 : 0
+  bucket = aws_s3_bucket.recovery[0].id
+  policy = data.aws_iam_policy_document.tls_only[0].json
+}
