@@ -1,0 +1,353 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "CloudHub T01 Linux session; isolated EC2 role, encrypted root EBS and SSM-only access.",
+  "Metadata": {
+    "AWSToolsMetrics": {
+      "AWSAgentToolkit": "aws-cloudformation@3"
+    }
+  },
+  "Parameters": {
+    "EnvironmentId": {
+      "Type": "String",
+      "AllowedPattern": "^[a-f0-9]{32}$"
+    },
+    "VpcId": {
+      "Type": "AWS::EC2::VPC::Id"
+    },
+    "PublicSubnetId": {
+      "Type": "AWS::EC2::Subnet::Id"
+    },
+    "WorkloadBoundaryArn": {
+      "Type": "String",
+      "AllowedPattern": "^arn:[^:]+:iam::[0-9]{12}:policy/.+$"
+    },
+    "AmiParameter": {
+      "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+      "Default": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    "InstanceType": {
+      "Type": "String",
+      "Default": "t3.micro",
+      "AllowedValues": [
+        "t3.micro",
+        "t3.small"
+      ]
+    },
+    "VolumeSize": {
+      "Type": "Number",
+      "Default": 16,
+      "MinValue": 8,
+      "MaxValue": 64
+    },
+    "RootSnapshotId": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|^snap-[a-f0-9]+$"
+    },
+    "SourceAmiId": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|^ami-([a-f0-9]{8}|[a-f0-9]{17})$"
+    }
+  },
+  "Resources": {
+    "InstanceRole": {
+      "Type": "AWS::IAM::Role",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Dedicated instance identity; SSM avoids inbound SSH.",
+          "must": [
+            "Keep the platform boundary and environment-specific resource policies."
+          ]
+        }
+      },
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${AWS::StackName}-instance"
+        },
+        "Path": "/cloudhub/workloads/",
+        "PermissionsBoundary": {
+          "Ref": "WorkloadBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "environment-runtime",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ssm:UpdateInstanceInformation",
+                    "ssmmessages:CreateControlChannel",
+                    "ssmmessages:CreateDataChannel",
+                    "ssmmessages:OpenControlChannel",
+                    "ssmmessages:OpenDataChannel"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ]
+      }
+    },
+    "InstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Attach the environment role without static credentials.",
+          "must": []
+        }
+      },
+      "Properties": {
+        "InstanceProfileName": {
+          "Fn::Sub": "${AWS::StackName}-profile"
+        },
+        "Path": "/cloudhub/workloads/",
+        "Roles": [
+          {
+            "Ref": "InstanceRole"
+          }
+        ]
+      }
+    },
+    "InstanceSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Outbound TLS lets the SSM agent reach AWS APIs without a NAT gateway.",
+          "must": [
+            "No inbound SSH or application access."
+          ]
+        }
+      },
+      "Properties": {
+        "GroupDescription": "CloudHub Linux SSM; no inbound ports",
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ]
+      }
+    },
+    "Instance": {
+      "Type": "AWS::EC2::Instance",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "One machine per session; root data can be restored from an approved EBS snapshot.",
+          "must": [
+            "F06 must snapshot quiesced data before deletion unless purge was confirmed.",
+            "Use a snapshot-owned source AMI and a volume at least as large as the snapshot."
+          ]
+        }
+      },
+      "Properties": {
+        "ImageId": {
+          "Fn::If": [
+            "HasSourceAmi",
+            {
+              "Ref": "SourceAmiId"
+            },
+            {
+              "Ref": "AmiParameter"
+            }
+          ]
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "IamInstanceProfile": {
+          "Ref": "InstanceProfile"
+        },
+        "CreditSpecification": {
+          "CPUCredits": "standard"
+        },
+        "MetadataOptions": {
+          "HttpTokens": "required",
+          "HttpEndpoint": "enabled",
+          "HttpPutResponseHopLimit": 1
+        },
+        "NetworkInterfaces": [
+          {
+            "DeviceIndex": "0",
+            "AssociatePublicIpAddress": true,
+            "SubnetId": {
+              "Ref": "PublicSubnetId"
+            },
+            "GroupSet": [
+              {
+                "Ref": "InstanceSecurityGroup"
+              }
+            ]
+          }
+        ],
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+              "VolumeType": "gp3",
+              "VolumeSize": {
+                "Ref": "VolumeSize"
+              },
+              "Encrypted": true,
+              "DeleteOnTermination": true,
+              "SnapshotId": {
+                "Fn::If": [
+                  "HasRootSnapshot",
+                  {
+                    "Ref": "RootSnapshotId"
+                  },
+                  {
+                    "Ref": "AWS::NoValue"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ]
+      },
+      "DeletionPolicy": "Delete",
+      "UpdateReplacePolicy": "Retain"
+    }
+  },
+  "Outputs": {
+    "InstanceId": {
+      "Description": "SSM managed instance for the owner",
+      "Value": {
+        "Ref": "Instance"
+      }
+    },
+    "AmiId": {
+      "Description": "Record this with the recovery point",
+      "Value": {
+        "Fn::If": [
+          "HasSourceAmi",
+          {
+            "Ref": "SourceAmiId"
+          },
+          {
+            "Ref": "AmiParameter"
+          }
+        ]
+      }
+    },
+    "RootDeviceName": {
+      "Description": "Resolve its EBS volume with DescribeInstances",
+      "Value": "/dev/xvda"
+    }
+  },
+  "Conditions": {
+    "HasRootSnapshot": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "RootSnapshotId"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "HasSourceAmi": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "SourceAmiId"
+            },
+            ""
+          ]
+        }
+      ]
+    }
+  },
+  "Rules": {
+    "SnapshotNeedsSourceAmi": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Or": [
+              {
+                "Fn::Equals": [
+                  {
+                    "Ref": "RootSnapshotId"
+                  },
+                  ""
+                ]
+              },
+              {
+                "Fn::Not": [
+                  {
+                    "Fn::Equals": [
+                      {
+                        "Ref": "SourceAmiId"
+                      },
+                      ""
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "Restore requires the recorded source AMI."
+        }
+      ]
+    }
+  }
+}

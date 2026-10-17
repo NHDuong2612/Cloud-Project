@@ -24,7 +24,7 @@ def configuration_hash(config):
 
 
 TERMINAL = {"SUCCEEDED", "PREVIEWED", "NO_CHANGES", "FAILED", "REJECTED", "WAITING_F08"}
-OUTPUTS = {"InstanceId", "EndpointUrl", "DatabaseIdentifier", "TargetGroupArn", "AutoScalingGroupName", "ServiceArn", "ClusterName", "RegisteredDataPrefix"}
+OUTPUTS = {"InstanceId", "AmiId", "RootDeviceName", "EndpointUrl", "DatabaseIdentifier", "TargetGroupArn", "AutoScalingGroupName", "ServiceArn", "ClusterName", "RegisteredDataPrefix"}
 
 
 class Worker:
@@ -88,6 +88,7 @@ class Worker:
                 if action != "create" and config.get(key, 0) < env["config"].get(key, 0):
                     raise ValidationError("Storage shrink is not supported.")
             self.settings.parameters(env["template_id"], env_id, config)
+            self.restore_parameters(env_id, op_id, env)
         else:
             self.check_delete(env_id, op_id, env, op)
         status = {"create": "PROVISIONING", "plan_update": "PLANNING", "update": "UPDATING", "delete": "DELETING"}[action]
@@ -108,6 +109,23 @@ class Worker:
 
     def stack_name(self, env_id):
         return f"cloudhub-env-{env_id}"
+
+    def restore_parameters(self, env_id, op_id, env):
+        job_id = env.get("restore_job_id")
+        if not job_id:
+            return {}
+        job = self.store.get(env_id, f"RESTORE#{job_id}")
+        if not job or not all([
+            job.get("status") == "APPROVED", job.get("owner_id") == env["owner_id"],
+            job.get("operation_id") == op_id, job.get("ownership_verified") is True,
+            job.get("template_id") == env["template_id"], job.get("template_version") == env["template_version"],
+        ]):
+            raise ValidationError("An owned, approved F06 restore job is required.")
+        parameters = job.get("parameters", {})
+        allowed = {"T01": {"RootSnapshotId", "SourceAmiId"}, "T05": {"RootSnapshotId", "SourceAmiId"}, "T03": {"DBSnapshotIdentifier"}, "T04": {"DBSnapshotIdentifier"}}.get(env["template_id"], set())
+        if not parameters or set(parameters) != allowed or any(type(v) is not str or not 1 <= len(v) <= 256 for v in parameters.values()):
+            raise ValidationError("Unsupported restore parameters.")
+        return parameters
 
     def stack(self, env_id, op):
         name = op.get("stack_id", self.stack_name(env_id))
@@ -150,6 +168,8 @@ class Worker:
         body = template.path.read_text(encoding="utf-8")
         schema = json.loads(body)
         parameters = self.settings.parameters(template.id, env_id, config)
+        if action == "create":
+            parameters.update(self.restore_parameters(env_id, op_id, env))
         required = {k for k, v in schema["Parameters"].items() if "Default" not in v}
         if required - set(parameters):
             raise ValidationError("Platform configuration is missing required template parameters.")

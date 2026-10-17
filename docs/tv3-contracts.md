@@ -36,4 +36,6 @@ Sau delete-stack, F04 ghi `AWAITING_VERIFICATION`, operation `WAITING_F08`, gi�
 
 Control table có DynamoDB Stream để TV4 nhận thay đổi READY và `expires_at_epoch`. Scheduler đọc lại expiry/version trước khi khóa; gia hạn hợp lệ phải cập nhật có điều kiện, không thu hồi theo lịch cũ.
 
+Khôi phục tạo environment mới và operation `create`, có `restore_job_id` trên META. F06 ghi `sk=RESTORE#<job_id>` trong partition môi trường mới: `status=APPROVED`, `owner_id`, `operation_id`, `ownership_verified=true`, `template_id`, `template_version`, `parameters`. T01/T05 chỉ nhận cặp RootSnapshotId/SourceAmiId; T03/T04 chỉ nhận DBSnapshotIdentifier. F06 phải kiểm tra snapshot nguồn, owner, account/region, AMI, kích thước volume và phiên bản ứng dụng trước khi duyệt. F04 không nhận các trường restore từ trình duyệt hoặc trong config của người dùng.
+
 Execution bị dừng hoặc timeout được EventBridge chuyển sang NEEDS_ATTENTION; worker không tự xóa stack update hoặc mở khóa cho tác vụ mới. Quản trị cần đối chiếu CloudFormation còn đang chạy, inventory và chính sách dữ liệu trước khi phục hồi tác vụ. Không force-unlock khi AWS còn tạo tài nguyên.

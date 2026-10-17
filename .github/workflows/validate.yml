@@ -15,6 +15,14 @@ jobs:
           python-version: '3.12'
       - run: pip install -e . -r requirements-dev.txt
       - run: python -m pytest -q
+      - run: cfn-lint src/cloudhub/templates/*.json --regions ap-southeast-1
+      - name: Install pinned CloudFormation Guard
+        run: |
+          curl --fail --location https://github.com/aws-cloudformation/cloudformation-guard/releases/download/3.2.0/cfn-guard-v3-x86_64-linux-latest.tar.gz -o /tmp/guard.tar.gz
+          echo 'c78f7a1a6c2674f7edbf0ebdc0590126487a14b103e434aea31205a4d1034d21  /tmp/guard.tar.gz' | sha256sum --check
+          mkdir /tmp/guard
+          tar -xzf /tmp/guard.tar.gz -C /tmp/guard --strip-components=1
+      - run: /tmp/guard/cfn-guard validate --rules security/cloudhub.guard --data src/cloudhub/templates --output-format json
   terraform:
     runs-on: ubuntu-latest
     defaults:

@@ -56,3 +56,4 @@ build/
 dist/
 *.egg-info/
 .coverage
+.tools/
