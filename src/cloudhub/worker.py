@@ -205,7 +205,7 @@ class Worker:
         if status != "CREATE_COMPLETE":
             raise ValidationError("Change set is not executable.")
         changes = [x.get("ResourceChange", {}) for x in change.get("Changes", [])]
-        if op["action"] != "create" and any(x.get("Replacement") in {"True", "Conditional"} for x in changes):
+        if op["action"] != "create" and any(x.get("Replacement") in {"True", "Conditional"} and x.get("ResourceType") != "AWS::ECS::TaskDefinition" for x in changes):
             raise ValidationError("Resource replacement requires a separate restore/migration workflow.")
         if op["action"] == "plan_update":
             summary = [{k: x[k] for k in ("LogicalResourceId", "ResourceType", "Action", "Replacement") if k in x} for x in changes]

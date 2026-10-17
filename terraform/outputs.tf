@@ -24,10 +24,11 @@ output "recovery_bucket_arn" {
 
 output "platform" {
   value = var.enable_platform ? {
-    control_table_name      = module.platform[0].control_table_name
-    artifact_bucket_name    = module.platform[0].artifact_bucket_name
-    cloudformation_role_arn = module.platform[0].cloudformation_role_arn
-    workload_boundary_arn   = module.platform[0].workload_boundary_arn
+    control_table_name        = module.platform[0].control_table_name
+    artifact_bucket_name      = module.platform[0].artifact_bucket_name
+    approved_image_repository = module.platform[0].approved_image_repository
+    cloudformation_role_arn   = module.platform[0].cloudformation_role_arn
+    workload_boundary_arn     = module.platform[0].workload_boundary_arn
   } : null
 }
 

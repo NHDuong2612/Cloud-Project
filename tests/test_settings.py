@@ -28,3 +28,14 @@ def test_container_image_requires_approved_digest():
     }, images={"demo": "nginx:latest"})
     with pytest.raises(ValidationError, match="digest"):
         settings.parameters("T06", "a" * 32, {"image_alias": "demo"})
+
+
+def test_ecr_repository_is_derived_and_data_bucket_is_required():
+    config = {"CertificateArn": "arn:aws:acm:ap-southeast-1:123456789012:certificate/12345678-abcd-1234-abcd-123456789012", "HostedZoneId": "Z123ABC", "BaseDomain": "labs.example.com", "RecoveryBucketName": "cloudhub-recovery-test"}
+    image = "123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/team/demo@sha256:" + "a" * 64
+    settings = Settings("table", "role", config, images={"demo": image})
+    result = settings.parameters("T06", "a" * 32, {"image_alias": "demo"})
+    assert result["ContainerRepositoryArn"] == "arn:aws:ecr:ap-southeast-1:123456789012:repository/team/demo"
+    bad = Settings("table", "role", config, images={"demo": image.replace("ap-southeast-1", "us-east-1")})
+    with pytest.raises(ValidationError, match="account and region"):
+        bad.parameters("T06", "a" * 32, {"image_alias": "demo"})

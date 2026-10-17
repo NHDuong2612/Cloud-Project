@@ -64,3 +64,17 @@ def test_t05_preserves_snapshot_content_instead_of_reseeding():
     bootstrap = template["Resources"]["Instance"]["Properties"]["UserData"]["Fn::Base64"]["Fn::Sub"]
     assert "if [ ! -f /usr/share/nginx/html/cloudhub/.cloudhub-seeded ]; then" in bootstrap
     assert "nginx -t" in bootstrap
+
+
+def test_t06_separates_execution_and_data_roles_and_uses_ip_targets():
+    template = builders.t06()
+    task = template["Resources"]["TaskDefinition"]["Properties"]
+    assert task["NetworkMode"] == "awsvpc"
+    assert task["RequiresCompatibilities"] == ["FARGATE"]
+    assert task["TaskRoleArn"] != task["ExecutionRoleArn"]
+    assert task["ContainerDefinitions"][0]["ReadonlyRootFilesystem"] is True
+    assert task["ContainerDefinitions"][0]["User"] == "10001:10001"
+    assert template["Resources"]["TargetGroup"]["Properties"]["TargetType"] == "ip"
+    assert template["Resources"]["Service"]["Properties"]["DeploymentConfiguration"]["DeploymentCircuitBreaker"]["Rollback"] is True
+    data_policy = template["Resources"]["TaskRole"]["Properties"]["Policies"][0]["PolicyDocument"]
+    assert "environments/${EnvironmentId}/data/*" in json.dumps(data_policy)

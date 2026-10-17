@@ -274,7 +274,70 @@ def t05():
     return template
 
 
-BUILDERS = {"t01": t01, "t03": t03, "t04": t04, "t05": t05}
+def t06():
+    template = base("CloudHub T06 ECS Fargate session; approved immutable image, HTTPS entry and registered per-environment S3 data prefix.")
+    template["Parameters"].pop("PublicSubnetId")
+    template["Parameters"].update({
+        "AllowedCidr": {"Type": "String", "AllowedPattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/(2[4-9]|3[0-2])$"},
+        "ContainerImage": {"Type": "String", "AllowedPattern": "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$"},
+        "ContainerRepositoryArn": {"Type": "String", "AllowedPattern": "^arn:[^:]+:ecr:[a-z0-9-]+:[0-9]{12}:repository/.+$"},
+        "RecoveryBucketName": {"Type": "String", "AllowedPattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"},
+        "Cpu": {"Type": "Number", "Default": 256, "AllowedValues": [256, 512]},
+        "Memory": {"Type": "Number", "Default": 512, "AllowedValues": [512, 1024, 2048]},
+        "DesiredTasks": {"Type": "Number", "Default": 1, "MinValue": 1, "MaxValue": 2},
+    })
+    template["Rules"] = {"FargateSizing": {"Assertions": [{"Assert": {"Fn::Or": [{"Fn::Equals": [ref("Cpu"), "256"]}, {"Fn::Not": [{"Fn::Equals": [ref("Memory"), "512"]}]}]}, "AssertDescription": "512 CPU units require at least 1024 MiB."}]}}
+    template["Resources"]["InstanceSecurityGroup"] = resource("AWS::EC2::SecurityGroup", {
+        "VpcId": ref("VpcId"), "GroupDescription": "CloudHub task ENIs; ALB ingress only", "Tags": tags(),
+        "SecurityGroupEgress": [{"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "CidrIp": "0.0.0.0/0"}],
+    }, "Outbound TLS for ECR, S3 and CloudWatch; no direct inbound task access.")
+    https_frontend(template, "ip")
+    trust = {"Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Principal": {"Service": "ecs-tasks.amazonaws.com"}, "Action": "sts:AssumeRole",
+        "Condition": {"StringEquals": {"aws:SourceAccount": ref("AWS::AccountId")}, "ArnLike": {"aws:SourceArn": sub("arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*")}},
+    }]}
+    template["Resources"]["LogGroup"] = resource("AWS::Logs::LogGroup", {"LogGroupName": sub("/cloudhub/environments/${EnvironmentId}"), "RetentionInDays": 14, "Tags": tags()}, "Retain operational logs separately from session data.", ["F08 must report this retained group and retention."], DeletionPolicy="Retain", UpdateReplacePolicy="Retain")
+    for name, suffix, statements, why in [
+        ("ExecutionRole", "execution", [
+            {"Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*"},
+            {"Effect": "Allow", "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"], "Resource": ref("ContainerRepositoryArn")},
+            {"Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"], "Resource": attr("LogGroup", "Arn")},
+        ], "Runtime pulls the approved image and writes logs; these credentials are not the application task role."),
+        ("TaskRole", "task", [{"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": sub("arn:${AWS::Partition}:s3:::${RecoveryBucketName}/environments/${EnvironmentId}/data/*")}], "Application can access only its registered persistent data prefix."),
+    ]:
+        template["Resources"][name] = resource("AWS::IAM::Role", {"RoleName": sub("${AWS::StackName}-" + suffix), "Path": "/cloudhub/workloads/", "PermissionsBoundary": ref("WorkloadBoundaryArn"), "AssumeRolePolicyDocument": deepcopy(trust), "Policies": [{"PolicyName": "environment-runtime", "PolicyDocument": {"Version": "2012-10-17", "Statement": statements}}], "Tags": tags()}, why, ["Keep the platform boundary and environment-scoped resource policy."])
+    template["Resources"]["Cluster"] = resource("AWS::ECS::Cluster", {"Tags": tags()}, "A session-local cluster keeps inventory and service ownership explicit.")
+    template["Resources"]["TaskDefinition"] = resource("AWS::ECS::TaskDefinition", {
+        "Family": sub("${AWS::StackName}-app"), "RequiresCompatibilities": ["FARGATE"], "NetworkMode": "awsvpc",
+        "RuntimePlatform": {"CpuArchitecture": "X86_64", "OperatingSystemFamily": "LINUX"}, "Cpu": ref("Cpu"), "Memory": ref("Memory"),
+        "ExecutionRoleArn": attr("ExecutionRole", "Arn"), "TaskRoleArn": attr("TaskRole", "Arn"), "Tags": tags(),
+        "ContainerDefinitions": [{
+            "Name": "app", "Image": ref("ContainerImage"), "Essential": True, "User": "10001:10001", "ReadonlyRootFilesystem": True,
+            "LinuxParameters": {"Capabilities": {"Drop": ["ALL"]}},
+            "PortMappings": [{"ContainerPort": 8080, "Protocol": "tcp"}],
+            "Environment": [{"Name": "DATA_BUCKET", "Value": ref("RecoveryBucketName")}, {"Name": "DATA_PREFIX", "Value": sub("environments/${EnvironmentId}/data/")}, {"Name": "AWS_DEFAULT_REGION", "Value": ref("AWS::Region")}],
+            "LogConfiguration": {"LogDriver": "awslogs", "Options": {"awslogs-group": ref("LogGroup"), "awslogs-region": ref("AWS::Region"), "awslogs-stream-prefix": "app"}},
+        }],
+    }, "Immutable task revisions use a non-root, read-only runtime; writable layers are not backups.")
+    template["Resources"]["Service"] = resource("AWS::ECS::Service", {
+        "Cluster": ref("Cluster"), "TaskDefinition": ref("TaskDefinition"), "LaunchType": "FARGATE", "PlatformVersion": "1.4.0", "DesiredCount": ref("DesiredTasks"),
+        "EnableExecuteCommand": False, "EnableECSManagedTags": True, "PropagateTags": "SERVICE", "Tags": tags(),
+        "HealthCheckGracePeriodSeconds": 60,
+        "DeploymentConfiguration": {"DeploymentCircuitBreaker": {"Enable": True, "Rollback": True}, "MinimumHealthyPercent": 100, "MaximumPercent": 200},
+        "NetworkConfiguration": {"AwsvpcConfiguration": {"AssignPublicIp": "ENABLED", "Subnets": ref("PublicSubnetIds"), "SecurityGroups": [ref("InstanceSecurityGroup")]}},
+        "LoadBalancers": [{"ContainerName": "app", "ContainerPort": 8080, "TargetGroupArn": ref("TargetGroup")}],
+    }, "Fargate tasks use IP targets; the circuit breaker prevents publishing a broken image.", ["Approved images must listen on 8080 and provide a meaningful /health endpoint."], DependsOn=["Listener", "WebIngress"])
+    template["Outputs"] = {
+        "EndpointUrl": {"Description": "HTTPS application URL", "Value": sub("https://${DomainName}")},
+        "TargetGroupArn": {"Description": "Readiness probe target group", "Value": ref("TargetGroup")},
+        "ClusterName": {"Description": "ECS cluster name", "Value": ref("Cluster")},
+        "ServiceArn": {"Description": "ECS service inventory", "Value": ref("Service")},
+        "RegisteredDataPrefix": {"Description": "Only this prefix belongs to this environment's backup scope", "Value": sub("s3://${RecoveryBucketName}/environments/${EnvironmentId}/data/")},
+    }
+    return template
+
+
+BUILDERS = {"t01": t01, "t03": t03, "t04": t04, "t05": t05, "t06": t06}
 
 
 def main():

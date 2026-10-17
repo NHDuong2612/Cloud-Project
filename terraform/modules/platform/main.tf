@@ -40,6 +40,15 @@ resource "aws_s3_bucket" "artifacts" {
   tags          = merge(var.common_tags, { Purpose = "trusted-deployment-code" })
 }
 
+resource "aws_ecr_repository" "approved_apps" {
+  name                 = "${var.name_prefix}-approved-apps"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = false
+  image_scanning_configuration { scan_on_push = true }
+  encryption_configuration { encryption_type = "AES256" }
+  tags = merge(var.common_tags, { Purpose = "approved-workload-images" })
+}
+
 resource "aws_s3_bucket_public_access_block" "artifacts" {
   bucket                  = aws_s3_bucket.artifacts.id
   block_public_acls       = true

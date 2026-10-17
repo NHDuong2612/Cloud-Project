@@ -61,4 +61,12 @@ class Settings:
             if not re.fullmatch(r"\d{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/[a-z0-9._/-]+@sha256:[a-f0-9]{64}", image):
                 raise ValidationError("Approved image must be an ECR SHA256 digest URI.")
             values["ContainerImage"] = image
+            registry, repository_digest = image.split("/", 1)
+            account, _, _, region, *_ = registry.split(".")
+            if account != values["CertificateArn"].split(":")[4] or region != values["CertificateArn"].split(":")[3]:
+                raise ValidationError("Approved image must use the platform account and region.")
+            values["ContainerRepositoryArn"] = f"arn:aws:ecr:{region}:{account}:repository/{repository_digest.split('@')[0]}"
+            bucket = values.get("RecoveryBucketName", "")
+            if bucket == "unconfigured" or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket):
+                raise ValidationError("T06 requires the registered recovery data bucket.")
         return values

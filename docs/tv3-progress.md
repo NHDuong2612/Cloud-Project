@@ -12,7 +12,7 @@ Mỗi hạng mục có một commit riêng, được đẩy lên GitHub trước
 | 5 | A12 / T03 | Web CRUD và RDS riêng tư | Đã có template, demo CRUD và kiểm thử; chờ kiểm chứng RDS/restore thật |
 | 6 | A13 / T04 | HTTPS ALB, ASG có giới hạn, RDS | Đã có template và kiểm thử; chờ domain/ACM/Route53 và kiểm chứng AWS |
 | 7 | A14 / T05 | Web server EC2, phối hợp TV1 | Đã có mẫu Nginx và bundle mẫu; chờ TV1 duyệt nội dung, TV4 kiểm chứng restore |
-| 8 | A16 / T06 | ECS Fargate với image được duyệt | Chưa triển khai |
+| 8 | A16 / T06 | ECS Fargate với image được duyệt | Đã có template, image source và kiểm thử; chờ domain/ACM/image được duyệt |
 | 9 | Bàn giao TV3 | Kiểm tra tích hợp, hướng dẫn TV2/TV4, các phần TV3 hỗ trợ | Chưa triển khai |
 
 TV4 phụ trách sao lưu/khôi phục (F06), scheduler cuối phiên và xác minh sau thu hồi (F08). TV2 phụ trách auth, API, quota và dự toán (F01/F03/F05). TV3 cung cấp giao diện tích hợp; trạng thái cuối phiên chỉ được xác nhận sau kết quả F08.
