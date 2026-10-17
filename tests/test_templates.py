@@ -56,3 +56,11 @@ def test_t04_uses_elb_health_and_signal_gated_rolling_updates():
     assert template["Parameters"]["MaxInstances"]["MaxValue"] == 3
     assert template["Resources"]["Listener"]["Properties"]["Protocol"] == "HTTPS"
     assert template["Resources"]["TargetGroup"]["Properties"]["HealthCheckPath"] == "/health"
+
+
+def test_t05_preserves_snapshot_content_instead_of_reseeding():
+    template = builders.t05()
+    assert "RootSnapshotId" in template["Parameters"]
+    bootstrap = template["Resources"]["Instance"]["Properties"]["UserData"]["Fn::Base64"]["Fn::Sub"]
+    assert "if [ ! -f /usr/share/nginx/html/cloudhub/.cloudhub-seeded ]; then" in bootstrap
+    assert "nginx -t" in bootstrap

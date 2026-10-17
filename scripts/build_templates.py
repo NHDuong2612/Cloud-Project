@@ -258,7 +258,23 @@ def t04():
     return template
 
 
-BUILDERS = {"t01": t01, "t03": t03, "t04": t04}
+def t05():
+    template = deepcopy(t01())
+    template["Description"] = "CloudHub T05 Nginx website session; trusted content persists on encrypted EBS and is preserved during snapshot restore."
+    web_parameters(template)
+    instance_role(template, [{"Effect": "Allow", "Action": "s3:GetObject", "Resource": sub("arn:${AWS::Partition}:s3:::${CodeBucket}/${AppBundleKey}")}])
+    template["Resources"]["InstanceSecurityGroup"]["Properties"].update({
+        "GroupDescription": "CloudHub website from approved client network",
+        "SecurityGroupIngress": [{"IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8080, "CidrIp": ref("AllowedCidr")}],
+    })
+    template["Resources"]["InstanceSecurityGroup"]["Metadata"]["com.aws.cloudformation.Context"] = {"why": "Website access is scoped to the client CIDR; administration uses SSM.", "must": ["No inbound SSH or unrestricted website ingress."]}
+    template["Resources"]["Instance"]["Properties"]["UserData"] = {"Fn::Base64": sub((ROOT / "scripts/assets/bootstrap-website.sh").read_text())}
+    template["Resources"]["Instance"]["Metadata"]["com.aws.cloudformation.Context"]["must"].append("Restored content must not be replaced by the seed website.")
+    template["Outputs"]["EndpointUrl"] = {"Description": "CIDR-restricted website demo; SSM tunnel is also supported", "Value": sub("http://${Instance.PublicIp}:8080")}
+    return template
+
+
+BUILDERS = {"t01": t01, "t03": t03, "t04": t04, "t05": t05}
 
 
 def main():

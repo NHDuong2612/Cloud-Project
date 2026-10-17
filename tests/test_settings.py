@@ -14,6 +14,7 @@ def test_https_hostname_is_server_derived():
     settings = Settings("table", "role", {
         "CertificateArn": "arn:aws:acm:ap-southeast-1:123456789012:certificate/12345678-abcd-1234-abcd-123456789012",
         "HostedZoneId": "Z123ABC", "BaseDomain": "labs.example.com",
+        "CodeBucket": "cloudhub-deployment-test", "CrudBundleKey": "apps/crud/" + "a" * 64 + ".zip",
     })
     result = settings.parameters("T04", "a" * 32, {})
     assert result["DomainName"] == "a" * 32 + ".labs.example.com"

@@ -1,0 +1,394 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "CloudHub T05 Nginx website session; trusted content persists on encrypted EBS and is preserved during snapshot restore.",
+  "Metadata": {
+    "AWSToolsMetrics": {
+      "AWSAgentToolkit": "aws-cloudformation@3"
+    }
+  },
+  "Parameters": {
+    "EnvironmentId": {
+      "Type": "String",
+      "AllowedPattern": "^[a-f0-9]{32}$"
+    },
+    "VpcId": {
+      "Type": "AWS::EC2::VPC::Id"
+    },
+    "PublicSubnetId": {
+      "Type": "AWS::EC2::Subnet::Id"
+    },
+    "WorkloadBoundaryArn": {
+      "Type": "String",
+      "AllowedPattern": "^arn:[^:]+:iam::[0-9]{12}:policy/.+$"
+    },
+    "AmiParameter": {
+      "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+      "Default": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    "InstanceType": {
+      "Type": "String",
+      "Default": "t3.micro",
+      "AllowedValues": [
+        "t3.micro",
+        "t3.small"
+      ]
+    },
+    "VolumeSize": {
+      "Type": "Number",
+      "Default": 16,
+      "MinValue": 8,
+      "MaxValue": 64
+    },
+    "RootSnapshotId": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|^snap-[a-f0-9]+$"
+    },
+    "SourceAmiId": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|^ami-([a-f0-9]{8}|[a-f0-9]{17})$"
+    },
+    "AllowedCidr": {
+      "Type": "String",
+      "AllowedPattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/(2[4-9]|3[0-2])$"
+    },
+    "CodeBucket": {
+      "Type": "String",
+      "AllowedPattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    },
+    "AppBundleKey": {
+      "Type": "String",
+      "AllowedPattern": "^apps/[a-z0-9_-]+/[a-f0-9]{64}\\.zip$"
+    }
+  },
+  "Resources": {
+    "InstanceRole": {
+      "Type": "AWS::IAM::Role",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Dedicated instance identity; SSM avoids inbound SSH.",
+          "must": [
+            "Keep the platform boundary and environment-specific resource policies."
+          ]
+        }
+      },
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${AWS::StackName}-instance"
+        },
+        "Path": "/cloudhub/workloads/",
+        "PermissionsBoundary": {
+          "Ref": "WorkloadBoundaryArn"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "environment-runtime",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ssm:UpdateInstanceInformation",
+                    "ssmmessages:CreateControlChannel",
+                    "ssmmessages:CreateDataChannel",
+                    "ssmmessages:OpenControlChannel",
+                    "ssmmessages:OpenDataChannel"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "s3:GetObject",
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:s3:::${CodeBucket}/${AppBundleKey}"
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ]
+      }
+    },
+    "InstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Attach the environment role without static credentials.",
+          "must": []
+        }
+      },
+      "Properties": {
+        "InstanceProfileName": {
+          "Fn::Sub": "${AWS::StackName}-profile"
+        },
+        "Path": "/cloudhub/workloads/",
+        "Roles": [
+          {
+            "Ref": "InstanceRole"
+          }
+        ]
+      }
+    },
+    "InstanceSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Website access is scoped to the client CIDR; administration uses SSM.",
+          "must": [
+            "No inbound SSH or unrestricted website ingress."
+          ]
+        }
+      },
+      "Properties": {
+        "GroupDescription": "CloudHub website from approved client network",
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ],
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 8080,
+            "ToPort": 8080,
+            "CidrIp": {
+              "Ref": "AllowedCidr"
+            }
+          }
+        ]
+      }
+    },
+    "Instance": {
+      "Type": "AWS::EC2::Instance",
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "One machine per session; root data can be restored from an approved EBS snapshot.",
+          "must": [
+            "F06 must snapshot quiesced data before deletion unless purge was confirmed.",
+            "Use a snapshot-owned source AMI and a volume at least as large as the snapshot.",
+            "Restored content must not be replaced by the seed website."
+          ]
+        }
+      },
+      "Properties": {
+        "ImageId": {
+          "Fn::If": [
+            "HasSourceAmi",
+            {
+              "Ref": "SourceAmiId"
+            },
+            {
+              "Ref": "AmiParameter"
+            }
+          ]
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "IamInstanceProfile": {
+          "Ref": "InstanceProfile"
+        },
+        "CreditSpecification": {
+          "CPUCredits": "standard"
+        },
+        "MetadataOptions": {
+          "HttpTokens": "required",
+          "HttpEndpoint": "enabled",
+          "HttpPutResponseHopLimit": 1
+        },
+        "NetworkInterfaces": [
+          {
+            "DeviceIndex": "0",
+            "AssociatePublicIpAddress": true,
+            "SubnetId": {
+              "Ref": "PublicSubnetId"
+            },
+            "GroupSet": [
+              {
+                "Ref": "InstanceSecurityGroup"
+              }
+            ]
+          }
+        ],
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+              "VolumeType": "gp3",
+              "VolumeSize": {
+                "Ref": "VolumeSize"
+              },
+              "Encrypted": true,
+              "DeleteOnTermination": true,
+              "SnapshotId": {
+                "Fn::If": [
+                  "HasRootSnapshot",
+                  {
+                    "Ref": "RootSnapshotId"
+                  },
+                  {
+                    "Ref": "AWS::NoValue"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "CloudHub"
+          },
+          {
+            "Key": "CloudHubEnvironmentId",
+            "Value": {
+              "Ref": "EnvironmentId"
+            }
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Sub": "#!/bin/bash\nset -eu\ndnf install -y nginx python3-pip\ninstall -d -m 755 /opt/cloudhub /usr/share/nginx/html/cloudhub\npython3 -m venv /opt/cloudhub/venv\n/opt/cloudhub/venv/bin/pip install 'boto3>=1.35,<2'\nif [ ! -f /usr/share/nginx/html/cloudhub/.cloudhub-seeded ]; then\n  /opt/cloudhub/venv/bin/python -c 'import boto3; boto3.client(\"s3\", region_name=\"${AWS::Region}\").download_file(\"${CodeBucket}\", \"${AppBundleKey}\", \"/opt/cloudhub/site.zip\")'\n  /opt/cloudhub/venv/bin/python -m zipfile -e /opt/cloudhub/site.zip /usr/share/nginx/html/cloudhub\n  test -f /usr/share/nginx/html/cloudhub/index.html\n  touch /usr/share/nginx/html/cloudhub/.cloudhub-seeded\nfi\nfind /usr/share/nginx/html/cloudhub -type d -exec chmod 755 {} \\;\nfind /usr/share/nginx/html/cloudhub -type f -exec chmod 644 {} \\;\nrestorecon -R /usr/share/nginx/html/cloudhub || true\ncat > /etc/nginx/nginx.conf <<'NGINX'\nuser nginx;\nworker_processes auto;\nerror_log /var/log/nginx/error.log warn;\npid /run/nginx.pid;\nevents { worker_connections 256; }\nhttp {\n  include /etc/nginx/mime.types;\n  server_tokens off;\n  access_log off;\n  server {\n    listen 8080 default_server;\n    root /usr/share/nginx/html/cloudhub;\n    index index.html;\n    add_header X-Content-Type-Options nosniff always;\n    add_header X-Frame-Options DENY always;\n    location = /health {\n      if (!-f $document_root/index.html) { return 503; }\n      default_type application/json;\n      return 200 '{\"status\":\"ok\"}';\n    }\n    location ~ /\\. { deny all; }\n    location / { try_files $uri $uri/ =404; }\n  }\n}\nNGINX\nnginx -t\nsystemctl enable --now nginx\n"
+          }
+        }
+      },
+      "DeletionPolicy": "Delete",
+      "UpdateReplacePolicy": "Retain"
+    }
+  },
+  "Outputs": {
+    "InstanceId": {
+      "Description": "SSM managed instance for the owner",
+      "Value": {
+        "Ref": "Instance"
+      }
+    },
+    "AmiId": {
+      "Description": "Record this with the recovery point",
+      "Value": {
+        "Fn::If": [
+          "HasSourceAmi",
+          {
+            "Ref": "SourceAmiId"
+          },
+          {
+            "Ref": "AmiParameter"
+          }
+        ]
+      }
+    },
+    "RootDeviceName": {
+      "Description": "Resolve its EBS volume with DescribeInstances",
+      "Value": "/dev/xvda"
+    },
+    "EndpointUrl": {
+      "Description": "CIDR-restricted website demo; SSM tunnel is also supported",
+      "Value": {
+        "Fn::Sub": "http://${Instance.PublicIp}:8080"
+      }
+    }
+  },
+  "Conditions": {
+    "HasRootSnapshot": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "RootSnapshotId"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "HasSourceAmi": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "SourceAmiId"
+            },
+            ""
+          ]
+        }
+      ]
+    }
+  },
+  "Rules": {
+    "SnapshotNeedsSourceAmi": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Or": [
+              {
+                "Fn::Equals": [
+                  {
+                    "Ref": "RootSnapshotId"
+                  },
+                  ""
+                ]
+              },
+              {
+                "Fn::Not": [
+                  {
+                    "Fn::Equals": [
+                      {
+                        "Ref": "SourceAmiId"
+                      },
+                      ""
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "Restore requires the recorded source AMI."
+        }
+      ]
+    }
+  }
+}

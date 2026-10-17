@@ -31,6 +31,10 @@ class Settings:
             "target_cpu": "TargetCPU", "cpu": "Cpu", "memory_mb": "Memory", "desired_tasks": "DesiredTasks",
         }
         values = {**self.platform, "EnvironmentId": env_id, **{keys[k]: str(v) for k, v in config.items() if k in keys}}
+        if template_id in ("T03", "T04"):
+            values["AppBundleKey"] = values.get("CrudBundleKey", values.get("AppBundleKey", ""))
+        if template_id == "T05":
+            values["AppBundleKey"] = values.get("WebsiteBundleKey", "")
         if template_id in ("T04", "T06"):
             for key in ("CertificateArn", "HostedZoneId", "BaseDomain"):
                 if not values.get(key):
@@ -43,6 +47,12 @@ class Settings:
             if not re.fullmatch(r"arn:aws:acm:[a-z0-9-]+:[0-9]{12}:certificate/[a-f0-9-]+", values["CertificateArn"]):
                 raise ValidationError("Platform ACM certificate ARN is invalid.")
             values["DomainName"] = f"{env_id}.{values.pop('BaseDomain')}"
+        if template_id in {"T03", "T04", "T05"}:
+            import re
+            if not re.fullmatch(r"apps/[a-z0-9_-]+/[a-f0-9]{64}\.zip", values.get("AppBundleKey", "")):
+                raise ValidationError("An approved immutable application bundle is required.")
+            if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", values.get("CodeBucket", "")):
+                raise ValidationError("Deployment code bucket is missing or invalid.")
         if template_id == "T06":
             image = (self.images or {}).get(config["image_alias"])
             if not image:
