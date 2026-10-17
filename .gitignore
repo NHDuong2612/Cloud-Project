@@ -46,3 +46,13 @@ Thumbs.db
 
 # --- Evidence may contain account screenshots; keep local if preferred ---
 # evidence/ (uncomment if you do not want screenshots in git)
+
+# Python and deployment artifacts
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+.coverage

@@ -10,12 +10,22 @@ variable "common_tags" {
   type = map(string)
 }
 
+variable "enable_network" {
+  type    = bool
+  default = false
+}
+
 variable "vpc_cidr" {
   type = string
 }
 
-variable "public_subnet_cidr" {
-  type = string
+variable "public_subnet_cidrs" {
+  type = list(string)
+
+  validation {
+    condition     = length(var.public_subnet_cidrs) == 2
+    error_message = "Provide exactly two public subnet CIDRs, one per AZ."
+  }
 }
 
 variable "private_db_subnet_cidrs" {
@@ -23,18 +33,16 @@ variable "private_db_subnet_cidrs" {
 
   validation {
     condition     = length(var.private_db_subnet_cidrs) == 2
-    error_message = "private_db_subnet_cidrs must contain exactly 2 CIDRs (one per AZ)."
+    error_message = "Provide exactly two private DB subnet CIDRs, one per AZ."
   }
 }
 
 variable "availability_zones" {
-  description = "Optional explicit AZs (need >= 2). Empty = auto-pick first 2 in region."
-  type        = list(string)
-  default     = []
-}
+  type    = list(string)
+  default = []
 
-variable "enable_network" {
-  description = "When true, create VPC networking resources"
-  type        = bool
-  default     = false
+  validation {
+    condition     = length(var.availability_zones) == 0 || length(var.availability_zones) == 2
+    error_message = "Provide two availability zones or leave the list empty."
+  }
 }

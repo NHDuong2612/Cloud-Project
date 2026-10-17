@@ -1,13 +1,5 @@
-# Module: storage — Task 7: private S3 backup vault (OpenStack -> AWS)
-#
-# Prefixed layout (for Người 1 / Người 3 backup jobs):
-#   s3://<bucket>/backups/<job-id>/database/
-#   s3://<bucket>/backups/<job-id>/uploads/
-#   s3://<bucket>/backups/<job-id>/manifest.json
-#   s3://<bucket>/metadata/
-#   s3://<bucket>/manifests/
-#
-# Cost: empty/demo objects are cents; prefer SSE-S3 (AES256) over KMS to avoid key fees.
+# Private, versioned CloudHub bucket for recovery artifacts and manifests.
+# The per-session retention policy is implemented by CloudHub's lifecycle jobs.
 
 data "aws_caller_identity" "current" {
   count = var.enable_storage ? 1 : 0
@@ -15,26 +7,22 @@ data "aws_caller_identity" "current" {
 
 locals {
   name_prefix = "${var.project_name}-${var.environment}"
-  # Globally unique bucket name
-  bucket_name = var.enable_storage ? "${local.name_prefix}-backups-${data.aws_caller_identity.current[0].account_id}" : null
+  bucket_name = var.enable_storage ? "${local.name_prefix}-recovery-${data.aws_caller_identity.current[0].account_id}" : null
 }
 
-resource "aws_s3_bucket" "backups" {
-  count = var.enable_storage ? 1 : 0
-
+resource "aws_s3_bucket" "recovery" {
+  count  = var.enable_storage ? 1 : 0
   bucket = local.bucket_name
 
   tags = merge(var.common_tags, {
     Name    = local.bucket_name
-    Purpose = "openstack-to-aws-backups"
+    Purpose = "cloudhub-recovery-artifacts"
   })
 }
 
-# Block all public access (required for demo security)
-resource "aws_s3_bucket_public_access_block" "backups" {
-  count = var.enable_storage ? 1 : 0
-
-  bucket = aws_s3_bucket.backups[0].id
+resource "aws_s3_bucket_public_access_block" "recovery" {
+  count  = var.enable_storage ? 1 : 0
+  bucket = aws_s3_bucket.recovery[0].id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -42,62 +30,38 @@ resource "aws_s3_bucket_public_access_block" "backups" {
   restrict_public_buckets = true
 }
 
-# SSE-S3 (AES256) — encrypted at rest, no customer-managed KMS cost
-resource "aws_s3_bucket_server_side_encryption_configuration" "backups" {
-  count = var.enable_storage ? 1 : 0
-
-  bucket = aws_s3_bucket.backups[0].id
+resource "aws_s3_bucket_server_side_encryption_configuration" "recovery" {
+  count  = var.enable_storage ? 1 : 0
+  bucket = aws_s3_bucket.recovery[0].id
 
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
     }
-    bucket_key_enabled = true
   }
 }
 
-# Versioning — keep previous backup object versions (prove restore integrity / rollback)
-resource "aws_s3_bucket_versioning" "backups" {
-  count = var.enable_storage ? 1 : 0
-
-  bucket = aws_s3_bucket.backups[0].id
+resource "aws_s3_bucket_versioning" "recovery" {
+  count  = var.enable_storage ? 1 : 0
+  bucket = aws_s3_bucket.recovery[0].id
 
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-# Ownership: BucketOwnerEnforced (ACLs disabled — modern default)
-resource "aws_s3_bucket_ownership_controls" "backups" {
-  count = var.enable_storage ? 1 : 0
-
-  bucket = aws_s3_bucket.backups[0].id
+resource "aws_s3_bucket_ownership_controls" "recovery" {
+  count  = var.enable_storage ? 1 : 0
+  bucket = aws_s3_bucket.recovery[0].id
 
   rule {
     object_ownership = "BucketOwnerEnforced"
   }
 }
 
-# Lifecycle: expire old noncurrent versions to control cost on student accounts
-resource "aws_s3_bucket_lifecycle_configuration" "backups" {
-  count = var.enable_storage ? 1 : 0
-
-  bucket = aws_s3_bucket.backups[0].id
-
-  depends_on = [aws_s3_bucket_versioning.backups]
-
-  rule {
-    id     = "expire-noncurrent-backup-versions"
-    status = "Enabled"
-
-    filter {
-      prefix = "backups/"
-    }
-
-    noncurrent_version_expiration {
-      noncurrent_days = var.noncurrent_version_expiration_days
-    }
-  }
+resource "aws_s3_bucket_lifecycle_configuration" "recovery" {
+  count  = var.enable_storage ? 1 : 0
+  bucket = aws_s3_bucket.recovery[0].id
 
   rule {
     id     = "abort-incomplete-multipart"
@@ -109,32 +73,4 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
       days_after_initiation = 7
     }
   }
-}
-
-# Prefix markers so the backup layout is visible in Console (zero-byte objects)
-resource "aws_s3_object" "prefix_backups" {
-  count = var.enable_storage ? 1 : 0
-
-  bucket       = aws_s3_bucket.backups[0].id
-  key          = "backups/"
-  content_type = "application/x-directory"
-  content      = ""
-}
-
-resource "aws_s3_object" "prefix_metadata" {
-  count = var.enable_storage ? 1 : 0
-
-  bucket       = aws_s3_bucket.backups[0].id
-  key          = "metadata/"
-  content_type = "application/x-directory"
-  content      = ""
-}
-
-resource "aws_s3_object" "prefix_manifests" {
-  count = var.enable_storage ? 1 : 0
-
-  bucket       = aws_s3_bucket.backups[0].id
-  key          = "manifests/"
-  content_type = "application/x-directory"
-  content      = ""
 }
