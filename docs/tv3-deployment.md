@@ -13,3 +13,13 @@ Mỗi môi trường có role riêng dưới `/cloudhub/workloads/`, với inlin
 5. Ghi lại outputs platform, VPC và subnet làm cấu hình cho worker F04. Không đưa state, tfvars, secret hoặc credentials lên GitHub.
 
 Auth/Cognito/API, chính sách quota, dự toán và các job sao lưu do TV2/TV4 tích hợp. A03 ở đây cung cấp hạ tầng dùng chung và quyền cho phần TV3; không đánh dấu các phân hệ đó là hoàn thành.
+
+## A07 — worker và Standard Step Functions
+
+1. Chạy `python scripts/package_worker.py`. File `build/worker.zip` có key nội dung `worker/<sha256>.zip` được in ra. Package chỉ dùng standard library và boto3 có trong Lambda runtime.
+2. Tải archive lên bucket deployment từ output A03 với key vừa in. Không dùng lại key cho nội dung mới.
+3. Điền `worker_s3_key`, bật `enable_orchestrator=true`, giữ `verified_templates=[]` tới khi có minh chứng AWS cho từng mẫu. Chạy lại plan trước apply.
+4. Điền `platform_parameters` phần bổ sung cho từng mẫu. Mạng, bucket mã và permissions boundary tự lấy từ outputs nếu đã bật module tương ứng.
+5. TV2 lưu request/quota theo [hợp đồng](tv3-contracts.md), rồi gọi workflow. TV4 tích hợp F06, DynamoDB Stream và F08. Alarm workflow và hàng đợi lỗi được xuất để F07 theo dõi.
+
+Kiểm tra ASL bằng `python scripts/validate_workflow.py --profile <profile> --region <region>`. API này chỉ validate định nghĩa, không tạo state machine hoặc Lambda.

@@ -18,6 +18,31 @@ variable "enable_platform" {
   default     = false
 }
 
+variable "enable_orchestrator" {
+  type    = bool
+  default = false
+}
+variable "worker_s3_key" {
+  description = "Immutable worker/<sha256>.zip uploaded to the deployment bucket."
+  type        = string
+  default     = ""
+}
+variable "platform_parameters" {
+  description = "Server-owned CloudFormation parameters, including ACM/Route53 configuration."
+  type        = map(string)
+  default     = {}
+}
+variable "verified_templates" {
+  description = "Allowlist enabled only after AWS lifecycle verification, e.g. T01@1.0.0."
+  type        = list(string)
+  default     = []
+}
+variable "approved_images" {
+  description = "Approved aliases mapped to immutable ECR digest URIs."
+  type        = map(string)
+  default     = {}
+}
+
 variable "project_name" {
   description = "Resource name prefix for CloudHub."
   type        = string

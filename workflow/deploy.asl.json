@@ -1,0 +1,525 @@
+{
+  "Comment": "CloudHub F04; IDs only in history; F08 owns final cleanup verification.",
+  "StartAt": "Acquire",
+  "TimeoutSeconds": 10800,
+  "States": {
+    "Acquire": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 75,
+      "Parameters": {
+        "FunctionName": "${WorkerArn}",
+        "Payload": {
+          "phase": "acquire",
+          "environment_id.$": "$.environment_id",
+          "operation_id.$": "$.operation_id"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "RetryableDeploymentError"
+          ],
+          "IntervalSeconds": 2,
+          "BackoffRate": 2,
+          "MaxAttempts": 3,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "Recover"
+        }
+      ],
+      "Next": "Acquired"
+    },
+    "Acquired": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "ERROR",
+          "Next": "Recover"
+        },
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "DONE",
+          "Next": "Succeeded"
+        }
+      ],
+      "Default": "Prepare"
+    },
+    "Prepare": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 75,
+      "Parameters": {
+        "FunctionName": "${WorkerArn}",
+        "Payload": {
+          "phase": "prepare",
+          "environment_id.$": "$.environment_id",
+          "operation_id.$": "$.operation_id"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "RetryableDeploymentError"
+          ],
+          "IntervalSeconds": 2,
+          "BackoffRate": 2,
+          "MaxAttempts": 3,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "Recover"
+        }
+      ],
+      "Next": "Prepared"
+    },
+    "Prepared": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "ERROR",
+          "Next": "Recover"
+        },
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "DELETED",
+          "Next": "Complete"
+        },
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "POLL",
+          "Next": "WaitStack"
+        }
+      ],
+      "Default": "WaitChangeSet"
+    },
+    "WaitChangeSet": {
+      "Type": "Wait",
+      "Seconds": 15,
+      "Next": "ChangeSet"
+    },
+    "ChangeSet": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 75,
+      "Parameters": {
+        "FunctionName": "${WorkerArn}",
+        "Payload": {
+          "phase": "changeset",
+          "environment_id.$": "$.environment_id",
+          "operation_id.$": "$.operation_id"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "RetryableDeploymentError"
+          ],
+          "IntervalSeconds": 2,
+          "BackoffRate": 2,
+          "MaxAttempts": 3,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "Recover"
+        }
+      ],
+      "Next": "ChangeSetReady"
+    },
+    "ChangeSetReady": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "ERROR",
+          "Next": "Recover"
+        },
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "WAIT",
+          "Next": "WaitChangeSet"
+        },
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "DONE",
+          "Next": "Succeeded"
+        }
+      ],
+      "Default": "Execute"
+    },
+    "Execute": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 75,
+      "Parameters": {
+        "FunctionName": "${WorkerArn}",
+        "Payload": {
+          "phase": "execute",
+          "environment_id.$": "$.environment_id",
+          "operation_id.$": "$.operation_id"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "RetryableDeploymentError"
+          ],
+          "IntervalSeconds": 2,
+          "BackoffRate": 2,
+          "MaxAttempts": 3,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "Recover"
+        }
+      ],
+      "Next": "Executed"
+    },
+    "Executed": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "ERROR",
+          "Next": "Recover"
+        }
+      ],
+      "Default": "WaitStack"
+    },
+    "WaitStack": {
+      "Type": "Wait",
+      "Seconds": 15,
+      "Next": "PollStack"
+    },
+    "PollStack": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 75,
+      "Parameters": {
+        "FunctionName": "${WorkerArn}",
+        "Payload": {
+          "phase": "poll",
+          "environment_id.$": "$.environment_id",
+          "operation_id.$": "$.operation_id"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "RetryableDeploymentError"
+          ],
+          "IntervalSeconds": 2,
+          "BackoffRate": 2,
+          "MaxAttempts": 3,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "Recover"
+        }
+      ],
+      "Next": "StackReady"
+    },
+    "StackReady": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "ERROR",
+          "Next": "Recover"
+        },
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "WAIT",
+          "Next": "WaitStack"
+        },
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "DELETED",
+          "Next": "Complete"
+        }
+      ],
+      "Default": "Health"
+    },
+    "Health": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 75,
+      "Parameters": {
+        "FunctionName": "${WorkerArn}",
+        "Payload": {
+          "phase": "health",
+          "environment_id.$": "$.environment_id",
+          "operation_id.$": "$.operation_id"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "RetryableDeploymentError"
+          ],
+          "IntervalSeconds": 2,
+          "BackoffRate": 2,
+          "MaxAttempts": 3,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "Recover"
+        }
+      ],
+      "Next": "Healthy"
+    },
+    "Healthy": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "ERROR",
+          "Next": "Recover"
+        },
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "WAIT",
+          "Next": "WaitHealth"
+        }
+      ],
+      "Default": "Complete"
+    },
+    "WaitHealth": {
+      "Type": "Wait",
+      "Seconds": 15,
+      "Next": "Health"
+    },
+    "Complete": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 75,
+      "Parameters": {
+        "FunctionName": "${WorkerArn}",
+        "Payload": {
+          "phase": "complete",
+          "environment_id.$": "$.environment_id",
+          "operation_id.$": "$.operation_id"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "RetryableDeploymentError"
+          ],
+          "IntervalSeconds": 2,
+          "BackoffRate": 2,
+          "MaxAttempts": 3,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "Recover"
+        }
+      ],
+      "Next": "Completed"
+    },
+    "Completed": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "ERROR",
+          "Next": "Recover"
+        }
+      ],
+      "Default": "Succeeded"
+    },
+    "Recover": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 75,
+      "Parameters": {
+        "FunctionName": "${WorkerArn}",
+        "Payload": {
+          "phase": "recover",
+          "environment_id.$": "$.environment_id",
+          "operation_id.$": "$.operation_id"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "RetryableDeploymentError"
+          ],
+          "IntervalSeconds": 2,
+          "BackoffRate": 2,
+          "MaxAttempts": 3,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "Failed"
+        }
+      ],
+      "Next": "Recovering"
+    },
+    "Recovering": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "WAIT",
+          "Next": "WaitRollback"
+        }
+      ],
+      "Default": "Failed"
+    },
+    "WaitRollback": {
+      "Type": "Wait",
+      "Seconds": 15,
+      "Next": "RollbackPoll"
+    },
+    "RollbackPoll": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 75,
+      "Parameters": {
+        "FunctionName": "${WorkerArn}",
+        "Payload": {
+          "phase": "rollback_poll",
+          "environment_id.$": "$.environment_id",
+          "operation_id.$": "$.operation_id"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "RetryableDeploymentError"
+          ],
+          "IntervalSeconds": 2,
+          "BackoffRate": 2,
+          "MaxAttempts": 3,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "Failed"
+        }
+      ],
+      "Next": "RollbackResult"
+    },
+    "RollbackResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.outcome",
+          "StringEquals": "WAIT",
+          "Next": "WaitRollback"
+        }
+      ],
+      "Default": "Failed"
+    },
+    "Succeeded": {
+      "Type": "Succeed"
+    },
+    "Failed": {
+      "Type": "Fail",
+      "Error": "CloudHubOperationFailed",
+      "Cause": "Read the sanitized operation record and AWS resource inventory."
+    }
+  }
+}

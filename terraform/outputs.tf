@@ -30,3 +30,12 @@ output "platform" {
     workload_boundary_arn   = module.platform[0].workload_boundary_arn
   } : null
 }
+
+output "deployment_workflow" {
+  value = var.enable_orchestrator && var.enable_platform ? {
+    state_machine_arn      = module.orchestrator[0].state_machine_arn
+    start_execution_policy = module.orchestrator[0].start_execution_policy
+    control_stream_arn     = module.platform[0].control_stream_arn
+    failures_queue_arn     = module.orchestrator[0].failures_queue_arn
+  } : null
+}

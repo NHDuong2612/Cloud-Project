@@ -10,10 +10,12 @@ locals {
 }
 
 resource "aws_dynamodb_table" "control" {
-  name         = "${var.name_prefix}-control"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "pk"
-  range_key    = "sk"
+  name             = "${var.name_prefix}-control"
+  billing_mode     = "PAY_PER_REQUEST"
+  hash_key         = "pk"
+  range_key        = "sk"
+  stream_enabled   = true
+  stream_view_type = "NEW_AND_OLD_IMAGES"
   attribute {
     name = "pk"
     type = "S"

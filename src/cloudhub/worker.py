@@ -1,0 +1,337 @@
+"""Short, idempotent CloudFormation steps driven by a Standard workflow."""
+
+from functools import lru_cache
+from hashlib import sha256
+import json
+import re
+import time
+
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
+
+from .catalog import ValidationError, get_template, require_available, validate_config
+from .settings import Settings
+from .store import DynamoStore
+
+
+class RetryableDeploymentError(RuntimeError):
+    pass
+
+
+def configuration_hash(config):
+    return sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+TERMINAL = {"SUCCEEDED", "PREVIEWED", "NO_CHANGES", "FAILED", "REJECTED", "WAITING_F08"}
+OUTPUTS = {"InstanceId", "EndpointUrl", "DatabaseIdentifier", "TargetGroupArn", "AutoScalingGroupName", "ServiceArn", "ClusterName", "RegisteredDataPrefix"}
+
+
+class Worker:
+    def __init__(self, store, cfn, ssm, elb, settings, clock=time.time):
+        self.store, self.cfn, self.ssm, self.elb, self.settings, self.clock = store, cfn, ssm, elb, settings, clock
+
+    def records(self, event):
+        env_id, op_id = event["environment_id"], event["operation_id"]
+        for value in (env_id, op_id):
+            if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{32}", value):
+                raise ValidationError("Identifiers must be UUID hex strings.")
+        env = self.store.get(env_id, "META")
+        op = self.store.operation(env_id, op_id)
+        if not env or not op or op["owner_id"] != env["owner_id"] or op["operation_id"] != op_id:
+            raise ValidationError("Operation or environment ownership is invalid.")
+        return env_id, op_id, env, op
+
+    def run(self, event):
+        env_id, op_id, env, op = self.records(event)
+        phase = event["phase"]
+        result = {"environment_id": env_id, "operation_id": op_id, "outcome": "CONTINUE"}
+        if op["status"] in TERMINAL and phase != "recover":
+            return {**result, "outcome": "DONE"}
+        if phase not in {"acquire", "recover"} and env.get("lock_owner") != op_id:
+            raise ValidationError("Operation does not own the environment lock.")
+        if phase not in ("acquire", "recover", "rollback_poll") and int(self.clock()) - int(op["started_at"]) > 7200:
+            raise ValidationError("Deployment deadline exceeded.")
+        method = getattr(self, phase, None)
+        if method is None or phase not in {"acquire", "prepare", "changeset", "execute", "poll", "health", "complete", "recover", "rollback_poll"}:
+            raise ValidationError("Unknown worker phase.")
+        return {**result, **method(env_id, op_id, env, op)}
+
+    def acquire(self, env_id, op_id, env, op):
+        action = op["action"]
+        if action not in {"create", "plan_update", "update", "delete"}:
+            raise ValidationError("Unsupported operation.")
+        if int(env["version"]) != int(op["expected_version"]):
+            raise ValidationError("Environment version has changed.")
+        allowed = {"create": {"REQUESTED", "PROVISIONING"}, "plan_update": {"READY", "PLANNING"}, "update": {"READY", "UPDATING"}, "delete": {"READY", "PAUSED", "FINALIZING", "DELETING"}}
+        if env["status"] not in allowed[action] or env.get("lock_owner") not in (None, op_id):
+            raise ValidationError("Environment is busy or in an incompatible state.")
+        if action != "delete":
+            require_available(env["template_id"], env["template_version"], self.settings.verified)
+            config = validate_config(env["template_id"], env["template_version"], op.get("config", env["config"]))
+            if action in {"create", "update"} and not op.get("quota_reservation_id"):
+                raise ValidationError("A server-side quota reservation is required.")
+            if action in {"create", "update"}:
+                reservation = self.store.get(env_id, f"QUOTA#{op['quota_reservation_id']}")
+                expected_hash = configuration_hash(config)
+                if not reservation or not all([
+                    reservation.get("owner_id") == env["owner_id"], reservation.get("operation_id") == op_id,
+                    reservation.get("config_hash") == expected_hash, op.get("config_hash") == expected_hash,
+                    reservation.get("status") in {"RESERVED", "CONSUMED"},
+                    reservation.get("status") == "CONSUMED" or int(reservation.get("valid_until", 0)) > int(self.clock()),
+                ]):
+                    raise ValidationError("Quota reservation is missing, expired or does not match configuration.")
+            duration = env["duration_minutes"]
+            if type(duration) is not int or not 15 <= duration <= 480:
+                raise ValidationError("Duration must be 15 to 480 minutes.")
+            for key in ("volume_gb", "db_storage_gb"):
+                if action != "create" and config.get(key, 0) < env["config"].get(key, 0):
+                    raise ValidationError("Storage shrink is not supported.")
+            self.settings.parameters(env["template_id"], env_id, config)
+        else:
+            self.check_delete(env_id, op_id, env, op)
+        status = {"create": "PROVISIONING", "plan_update": "PLANNING", "update": "UPDATING", "delete": "DELETING"}[action]
+        self.store.lock(env, op, status, int(self.clock()))
+        return {}
+
+    def check_delete(self, env_id, op_id, env, op):
+        if env.get("retention_policy") == "purge" and op.get("purge_confirmed") is True:
+            return
+        job_id = op.get("backup_job_id")
+        job = self.store.get(env_id, f"BACKUP#{job_id}") if job_id else None
+        if not job or not all([
+            job.get("status") == "COMPLETED", job.get("owner_id") == env["owner_id"],
+            job.get("source_version") == op["expected_version"], job.get("source_quiesced") is True,
+            job.get("operation_id") == op_id, bool(job.get("recovery_point")),
+        ]):
+            raise ValidationError("A consistent completed F06 backup is required before deletion.")
+
+    def stack_name(self, env_id):
+        return f"cloudhub-env-{env_id}"
+
+    def stack(self, env_id, op):
+        name = op.get("stack_id", self.stack_name(env_id))
+        try:
+            stack = self.cfn.describe_stacks(StackName=name)["Stacks"][0]
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ValidationError" and "does not exist" in exc.response["Error"].get("Message", ""):
+                return None
+            raise
+        tags = {x["Key"]: x["Value"] for x in stack.get("Tags", [])}
+        if tags.get("CloudHubEnvironmentId") != env_id or tags.get("Project") != "CloudHub":
+            raise ValidationError("Stack ownership tags do not match.")
+        return stack
+
+    def inventory(self, env_id, op_id, stack_id):
+        pages = self.cfn.get_paginator("list_stack_resources").paginate(StackName=stack_id)
+        for page in pages:
+            self.store.inventory(env_id, op_id, page["StackResourceSummaries"], int(self.clock()))
+
+    def prepare(self, env_id, op_id, env, op):
+        action = op["action"]
+        if action == "delete":
+            stack = self.stack(env_id, op)
+            if not stack:
+                return {"outcome": "DELETED"}
+            self.inventory(env_id, op_id, stack["StackId"])
+            self.store.patch_operation(env_id, op_id, stack_id=stack["StackId"])
+            self.cfn.delete_stack(StackName=stack["StackId"], RoleARN=self.settings.cfn_role_arn, ClientRequestToken=op_id)
+            return {"outcome": "POLL"}
+        if action == "update":
+            preview = self.store.operation(env_id, op.get("preview_operation_id", ""))
+            if not preview or preview.get("status") != "PREVIEWED" or preview.get("expected_version") != op["expected_version"] or preview.get("owner_id") != env["owner_id"]:
+                raise ValidationError("A current, owned change-set preview is required.")
+            if preview["config"] != op.get("config") or op.get("confirmed_change_set_id") != preview["change_set_id"]:
+                raise ValidationError("Confirmed configuration does not match the preview.")
+            self.store.patch_operation(env_id, op_id, change_set_id=preview["change_set_id"], stack_id=preview["stack_id"])
+            return {}
+        template = get_template(env["template_id"], env["template_version"])
+        config = validate_config(template.id, template.version, op.get("config", env["config"]))
+        body = template.path.read_text(encoding="utf-8")
+        schema = json.loads(body)
+        parameters = self.settings.parameters(template.id, env_id, config)
+        required = {k for k, v in schema["Parameters"].items() if "Default" not in v}
+        if required - set(parameters):
+            raise ValidationError("Platform configuration is missing required template parameters.")
+        request = {
+            "StackName": self.stack_name(env_id), "ChangeSetName": f"op-{op_id}",
+            "ChangeSetType": "CREATE" if action == "create" else "UPDATE", "TemplateBody": body,
+            "Parameters": [{"ParameterKey": k, "ParameterValue": str(v)} for k, v in parameters.items() if k in schema["Parameters"]],
+            "Capabilities": ["CAPABILITY_NAMED_IAM"], "RoleARN": self.settings.cfn_role_arn, "ClientToken": op_id,
+            "Tags": [{"Key": k, "Value": v} for k, v in {"Project": "CloudHub", "CloudHubEnvironmentId": env_id, "OwnerId": env["owner_id"], "TemplateVersion": f"{template.id}@{template.version}"}.items()],
+        }
+        try:
+            response = self.cfn.create_change_set(**request)
+        except self.cfn.exceptions.AlreadyExistsException:
+            response = self.cfn.describe_change_set(StackName=request["StackName"], ChangeSetName=request["ChangeSetName"])
+            response = {"Id": response["ChangeSetId"], "StackId": response["StackId"]}
+        self.store.patch_operation(env_id, op_id, change_set_id=response["Id"], stack_id=response["StackId"], config=config)
+        return {}
+
+    def changeset(self, env_id, op_id, env, op):
+        change = self.cfn.describe_change_set(ChangeSetName=op["change_set_id"])
+        status = change["Status"]
+        if status in {"CREATE_PENDING", "CREATE_IN_PROGRESS"}:
+            return {"outcome": "WAIT"}
+        if status == "FAILED":
+            reason = change.get("StatusReason", "")
+            if op["action"] != "create" and ("didn't contain changes" in reason or "No updates" in reason):
+                self.store.finish(env, op, "READY", "NO_CHANGES", int(self.clock()), bump_version=False)
+                return {"outcome": "DONE"}
+            raise ValidationError("CloudFormation change-set creation failed; review AWS events.")
+        if status != "CREATE_COMPLETE":
+            raise ValidationError("Change set is not executable.")
+        changes = [x.get("ResourceChange", {}) for x in change.get("Changes", [])]
+        if op["action"] != "create" and any(x.get("Replacement") in {"True", "Conditional"} for x in changes):
+            raise ValidationError("Resource replacement requires a separate restore/migration workflow.")
+        if op["action"] == "plan_update":
+            summary = [{k: x[k] for k in ("LogicalResourceId", "ResourceType", "Action", "Replacement") if k in x} for x in changes]
+            self.store.patch_operation(env_id, op_id, changes=summary)
+            self.store.finish(env, op, "READY", "PREVIEWED", int(self.clock()), bump_version=False)
+            return {"outcome": "DONE"}
+        return {}
+
+    def execute(self, env_id, op_id, env, op):
+        change = self.cfn.describe_change_set(ChangeSetName=op["change_set_id"])
+        if change.get("ExecutionStatus") not in {"EXECUTE_IN_PROGRESS", "EXECUTE_COMPLETE"}:
+            self.cfn.execute_change_set(ChangeSetName=op["change_set_id"], ClientRequestToken=op_id)
+        return {}
+
+    def poll(self, env_id, op_id, env, op):
+        stack = self.stack(env_id, op)
+        if not stack:
+            if op["action"] == "delete":
+                return {"outcome": "DELETED"}
+            raise ValidationError("Environment stack is missing.")
+        status = stack["StackStatus"]
+        if status.endswith("_IN_PROGRESS") or status == "REVIEW_IN_PROGRESS":
+            return {"outcome": "WAIT"}
+        self.inventory(env_id, op_id, stack["StackId"])
+        if op["action"] == "delete":
+            if status == "DELETE_COMPLETE":
+                return {"outcome": "DELETED"}
+            raise ValidationError("Stack deletion failed; retained resources require review.")
+        if status not in {"CREATE_COMPLETE", "UPDATE_COMPLETE"}:
+            raise ValidationError("Stack provisioning failed; inspect CloudFormation events.")
+        outputs = {x["OutputKey"]: x["OutputValue"] for x in stack.get("Outputs", []) if x["OutputKey"] in OUTPUTS}
+        self.store.patch_operation(env_id, op_id, outputs=outputs)
+        return {}
+
+    def health(self, env_id, op_id, env, op):
+        if not op.get("health_started"):
+            self.store.patch_operation(env_id, op_id, health_started=int(self.clock()))
+        elif int(self.clock()) - int(op["health_started"]) > 600:
+            raise ValidationError("Readiness check exceeded ten minutes.")
+        outputs = op.get("outputs", {})
+        if "TargetGroupArn" in outputs:
+            targets = self.elb.describe_target_health(TargetGroupArn=outputs["TargetGroupArn"])["TargetHealthDescriptions"]
+            config = op.get("config", env["config"])
+            expected = config.get("desired_instances", config.get("desired_tasks", 1))
+            healthy = sum(x["TargetHealth"]["State"] == "healthy" for x in targets)
+            return {"outcome": "HEALTHY" if healthy >= expected else "WAIT"}
+        instance_id = outputs.get("InstanceId")
+        if not instance_id:
+            raise ValidationError("Template has no supported readiness probe.")
+        nodes = self.ssm.describe_instance_information(Filters=[{"Key": "InstanceIds", "Values": [instance_id]}])["InstanceInformationList"]
+        if not nodes or nodes[0]["PingStatus"] != "Online":
+            return {"outcome": "WAIT"}
+        if env["template_id"] == "T01":
+            return {"outcome": "HEALTHY"}
+        command_id = op.get("health_command_id")
+        if not command_id:
+            response = self.ssm.send_command(InstanceIds=[instance_id], DocumentName="AWS-RunShellScript", Parameters={"commands": ["curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8080/health"]}, TimeoutSeconds=30)
+            self.store.patch_operation(env_id, op_id, health_command_id=response["Command"]["CommandId"])
+            return {"outcome": "WAIT"}
+        try:
+            invocation = self.ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
+        except self.ssm.exceptions.InvocationDoesNotExist:
+            return {"outcome": "WAIT"}
+        if invocation["Status"] in {"Pending", "InProgress", "Delayed"}:
+            return {"outcome": "WAIT"}
+        if invocation["Status"] != "Success":
+            self.store.patch_operation(env_id, op_id, health_command_id="")
+            return {"outcome": "WAIT"}
+        return {"outcome": "HEALTHY"}
+
+    def complete(self, env_id, op_id, env, op):
+        now = int(self.clock())
+        if op["action"] == "delete":
+            self.store.finish(env, op, "AWAITING_VERIFICATION", "WAITING_F08", now, keep_lock=True, bump_version=False)
+        else:
+            fields = {"stack_id": op["stack_id"], "outputs": op.get("outputs", {}), "config": op.get("config", env["config"])}
+            if op["action"] == "create":
+                fields.update(ready_at=now, expires_at_epoch=now + int(env["duration_minutes"]) * 60)
+            self.store.finish(env, op, "READY", "SUCCEEDED", now, **fields)
+        return {"outcome": "DONE"}
+
+    def recover(self, env_id, op_id, env, op):
+        if env.get("lock_owner") != op_id:
+            # A rejected competing request must never unlock or alter another job.
+            if op["status"] not in TERMINAL:
+                self.store.patch_operation(env_id, op_id, status="REJECTED", error_code="REQUEST_REJECTED")
+            return {"outcome": "DONE"}
+        stack = self.stack(env_id, op)
+        if stack:
+            self.inventory(env_id, op_id, stack["StackId"])
+        if op["action"] == "create" and stack and stack["StackStatus"] != "DELETE_COMPLETE":
+            self.cfn.delete_stack(StackName=stack["StackId"], RoleARN=self.settings.cfn_role_arn, ClientRequestToken=f"rollback-{op_id}")
+            self.store.patch_operation(env_id, op_id, rollback_started=int(self.clock()), stack_id=stack["StackId"])
+            return {"outcome": "WAIT"}
+        self.store.finish(env, op, "NEEDS_ATTENTION", "FAILED", int(self.clock()))
+        return {"outcome": "DONE"}
+
+    def rollback_poll(self, env_id, op_id, env, op):
+        stack = self.stack(env_id, op)
+        if stack and stack["StackStatus"].endswith("_IN_PROGRESS") and int(self.clock()) - int(op.get("rollback_started", 0)) < 1800:
+            return {"outcome": "WAIT"}
+        if stack:
+            self.inventory(env_id, op_id, stack["StackId"])
+        self.store.finish(env, op, "NEEDS_ATTENTION", "FAILED", int(self.clock()))
+        return {"outcome": "DONE"}
+
+
+@lru_cache(maxsize=1)
+def runtime():
+    settings = Settings.from_env()
+    config = Config(retries={"mode": "standard", "total_max_attempts": 3}, connect_timeout=5, read_timeout=20)
+    session = boto3.Session()
+    return Worker(DynamoStore(session.resource("dynamodb", config=config).Table(settings.table_name)), session.client("cloudformation", config=config), session.client("ssm", config=config), session.client("elbv2", config=config), settings)
+
+
+def handler(event, context):
+    worker = runtime()
+    try:
+        return worker.run(event)
+    except ClientError as exc:
+        code = exc.response["Error"]["Code"]
+        transient_transaction = code == "TransactionCanceledException" and any(x.get("Code") in {"TransactionConflict", "ProvisionedThroughputExceeded", "ThrottlingError"} for x in exc.response.get("CancellationReasons", []))
+        if transient_transaction or code in {"Throttling", "ThrottlingException", "TooManyRequestsException", "RequestLimitExceeded", "TransactionInProgressException"}:
+            raise RetryableDeploymentError("AWS_RETRYABLE") from None
+        error_code = "AWS_" + re.sub(r"[^A-Za-z0-9_]", "", code)[:64]
+    except (ValidationError, KeyError, TypeError, ValueError):
+        error_code = "INVALID_OPERATION_OR_STATE"
+    except BotoCoreError:
+        raise RetryableDeploymentError("AWS_TRANSPORT_RETRYABLE") from None
+    # Never put AWS raw messages or command output in execution history.
+    if re.fullmatch(r"[a-f0-9]{32}", str(event.get("environment_id", ""))) and re.fullmatch(r"[a-f0-9]{32}", str(event.get("operation_id", ""))):
+        try:
+            worker.records(event)
+            worker.store.patch_operation(event["environment_id"], event["operation_id"], error_code=error_code)
+        except (ClientError, ValidationError, KeyError, TypeError, ValueError):
+            pass
+    return {"environment_id": event.get("environment_id", ""), "operation_id": event.get("operation_id", ""), "outcome": "ERROR", "error_code": error_code}
+
+
+def reconcile_handler(event, context):
+    """A stopped execution may leave AWS operations active: require manual review."""
+    import os
+    detail = event["detail"]
+    if detail.get("stateMachineArn") != os.environ["STATE_MACHINE_ARN"] or detail.get("status") not in {"FAILED", "TIMED_OUT", "ABORTED"}:
+        return
+    execution = boto3.client("stepfunctions").describe_execution(executionArn=detail["executionArn"])
+    data = json.loads(execution["input"])
+    worker = runtime()
+    _, _, env, op = worker.records(data)
+    if op["status"] not in TERMINAL and env.get("lock_owner") == op["operation_id"]:
+        worker.store.patch_operation(data["environment_id"], data["operation_id"], error_code="EXECUTION_INTERRUPTED")
+        worker.store.finish(env, op, "NEEDS_ATTENTION", "FAILED", int(time.time()))
