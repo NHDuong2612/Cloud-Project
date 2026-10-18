@@ -125,6 +125,10 @@ class Worker:
             for key in ("volume_gb", "db_storage_gb"):
                 if action != "create" and config.get(key, 0) < env["config"].get(key, 0):
                     raise ValidationError("Storage shrink is not supported.")
+            if action in {"plan_update", "update"} and "db_storage_gb" in config:
+                source = env["config"]["db_storage_gb"]
+                if source < config["db_storage_gb"] < (source * 110 + 99) // 100:
+                    raise ValidationError("RDS storage increases must be at least ten percent.")
             self.settings.parameters(env["template_id"], env_id, config)
             if action == "create":
                 self.restore_parameters(env_id, op_id, env)
@@ -183,6 +187,10 @@ class Worker:
         allowed = {"T01": {"RootSnapshotId", "SourceAmiId"}, "T05": {"RootSnapshotId", "SourceAmiId"}, "T03": {"DBSnapshotIdentifier"}, "T04": {"DBSnapshotIdentifier"}}.get(env["template_id"], set())
         if not parameters or set(parameters) != allowed or any(type(v) is not str or not 1 <= len(v) <= 256 for v in parameters.values()):
             raise ValidationError("Unsupported restore parameters.")
+        if env["template_id"] in {"T03", "T04"}:
+            source, requested = job.get("source_allocated_storage_gb"), env["config"]["db_storage_gb"]
+            if type(source) is not int or source < 20 or requested < source or source < requested < (source * 110 + 99) // 100:
+                raise ValidationError("RDS restore storage must match the verified snapshot size or increase it by at least ten percent.")
         return parameters
 
     def stack(self, env_id, op):

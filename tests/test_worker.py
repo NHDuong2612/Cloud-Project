@@ -220,7 +220,7 @@ def test_postgres_restore_enables_credentials_before_app_resources(make_worker):
     config = validate_config("T03", "1.0.0", {"allowed_cidr": "192.0.2.1/32"})
     store.env.update(template_id="T03", config=config, restore_job_id="restore-1", lock_owner=OP_ID)
     store.op.update(status="RUNNING", started_at=1000, config=config, stack_id="stack-id", outputs={"DatabaseIdentifier": "cloudhub-env-db"})
-    store.other["RESTORE#restore-1"] = {"status": "APPROVED", "owner_id": "user-1", "operation_id": OP_ID, "ownership_verified": True, "template_id": "T03", "template_version": "1.0.0", "parameters": {"DBSnapshotIdentifier": "owned-snapshot"}}
+    store.other["RESTORE#restore-1"] = {"status": "APPROVED", "owner_id": "user-1", "operation_id": OP_ID, "ownership_verified": True, "template_id": "T03", "template_version": "1.0.0", "source_allocated_storage_gb": 20, "parameters": {"DBSnapshotIdentifier": "owned-snapshot"}}
     worker.settings = Settings("table", "arn:aws:iam::123456789012:role/deployer", {"CodeBucket": "cloudhub-code", "CrudBundleKey": "apps/crud/" + "a" * 64 + ".zip"})
     worker.rds = Mock()
     assert call(worker, "post_provision")["outcome"] == "WAIT"

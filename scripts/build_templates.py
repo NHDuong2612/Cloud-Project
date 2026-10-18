@@ -132,7 +132,7 @@ def database(template):
         "Database": resource("AWS::RDS::DBInstance", {
             "DBInstanceIdentifier": sub("${AWS::StackName}-db"), "Engine": "postgres", "EngineVersion": ref("DBEngineVersion"),
             "EngineLifecycleSupport": "open-source-rds-extended-support-disabled",
-            "DBInstanceClass": ref("DBInstanceClass"), "AllocatedStorage": new_only(ref("DBStorage")), "StorageType": "gp3", "StorageEncrypted": new_only(True),
+            "DBInstanceClass": ref("DBInstanceClass"), "AllocatedStorage": ref("DBStorage"), "StorageType": "gp3", "StorageEncrypted": new_only(True),
             "DBName": new_only("cloudhub"), "MasterUsername": new_only("cloudhub_admin"), "ManageMasterUserPassword": True,
             "DBSnapshotIdentifier": {"Fn::If": ["HasDBSnapshot", ref("DBSnapshotIdentifier"), ref("AWS::NoValue")]},
             "DBSubnetGroupName": ref("DatabaseSubnets"), "DBParameterGroupName": ref("DatabaseParameters"), "VPCSecurityGroups": [ref("DatabaseSecurityGroup")],

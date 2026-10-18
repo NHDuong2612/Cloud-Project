@@ -275,15 +275,7 @@
           "Ref": "DBInstanceClass"
         },
         "AllocatedStorage": {
-          "Fn::If": [
-            "HasDBSnapshot",
-            {
-              "Ref": "AWS::NoValue"
-            },
-            {
-              "Ref": "DBStorage"
-            }
-          ]
+          "Ref": "DBStorage"
         },
         "StorageType": "gp3",
         "StorageEncrypted": {
