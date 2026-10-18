@@ -2,6 +2,8 @@
 
 ## Bổ sung sau audit ngày 19/10/2026
 
+Kiểm tra cuối: **114 kiểm thử đạt**. Xem [kết quả và giới hạn kiểm chứng](evidence/post-audit-validation.md). Có thêm bản sửa khởi tạo S3 T06 không cần ListBucket (`6a5a825`).
+
 - `4c57dba`: quyền EC2 update giới hạn instance có tag CloudHub.
 - `af969f1`: worker nhận renew, reservation ràng buộc hạn mới, transaction kiểm tra expiry/version/lock; TV2/TV4 cần tích hợp API/F03/scheduler theo hợp đồng.
 - `3bc0707`: F04 nhận kết quả copy/verify prefix S3 T06 từ F06; TV4 vẫn triển khai và chứng minh copy thật.

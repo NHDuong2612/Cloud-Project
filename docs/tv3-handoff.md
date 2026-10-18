@@ -1,5 +1,7 @@
 # Bàn giao TV3
 
+Đọc bổ sung [kết quả sau audit 19/10](evidence/post-audit-validation.md), [kịch bản A22/A24](tv3-acceptance.md), [restore T06](t06-restore-contract.md), [RDS storage](rds-storage-contract.md) và [phục hồi workflow](workflow-recovery.md). Mã đã có gia hạn; API/quota/scheduler vẫn cần phối hợp theo hợp đồng. Bản evidence mới phân biệt kiểm thử cục bộ với các bước AWS còn chờ.
+
 ## Các hạng mục đã có mã
 
 | Hạng mục | Đầu ra |
