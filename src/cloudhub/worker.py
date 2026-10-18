@@ -163,6 +163,23 @@ class Worker:
         ]):
             raise ValidationError("An owned, approved F06 restore job is required.")
         parameters = job.get("parameters", {})
+        if env["template_id"] == "T06":
+            copy = job.get("data_copy", {})
+            if not isinstance(copy, dict):
+                raise ValidationError("T06 restore copy metadata must be an object.")
+            expected = self.settings.parameters("T06", env_id, env["config"])
+            count, verified_at = copy.get("object_count"), copy.get("verified_at_epoch")
+            if parameters != {} or not all([
+                copy.get("status") == "VERIFIED", copy.get("destination_bucket") == expected["RecoveryBucketName"],
+                copy.get("destination_prefix") == f"environments/{env_id}/data/",
+                copy.get("container_image") == expected["ContainerImage"],
+                type(count) is int and count >= 0,
+                type(verified_at) is int and 0 < verified_at <= int(self.clock()),
+                re.fullmatch(r"[a-f0-9]{64}", str(copy.get("manifest_sha256", ""))) is not None,
+                re.fullmatch(r"[A-Za-z0-9_-]{1,128}", str(copy.get("source_backup_id", ""))) is not None,
+            ]):
+                raise ValidationError("T06 requires a verified F06 data copy into this environment's registered prefix and image.")
+            return {}
         allowed = {"T01": {"RootSnapshotId", "SourceAmiId"}, "T05": {"RootSnapshotId", "SourceAmiId"}, "T03": {"DBSnapshotIdentifier"}, "T04": {"DBSnapshotIdentifier"}}.get(env["template_id"], set())
         if not parameters or set(parameters) != allowed or any(type(v) is not str or not 1 <= len(v) <= 256 for v in parameters.values()):
             raise ValidationError("Unsupported restore parameters.")
@@ -222,6 +239,10 @@ class Worker:
         parameters = self.settings.parameters(template.id, env_id, config)
         if action == "create":
             parameters.update(self.restore_parameters(env_id, op_id, env))
+            if template.id == "T06" and env.get("restore_job_id"):
+                self.store.patch_operation(env_id, op_id, restored_data={
+                    "bucket": parameters["RecoveryBucketName"], "prefix": f"environments/{env_id}/data/", "restore_job_id": env["restore_job_id"],
+                })
         else:
             parameters.update(env.get("restore_parameters", {}))
         required = {k for k, v in schema["Parameters"].items() if "Default" not in v}
@@ -367,6 +388,8 @@ class Worker:
             if op["action"] == "create":
                 fields.update(ready_at=now, expires_at_epoch=now + int(env["duration_minutes"]) * 60)
                 fields["restore_parameters"] = self.restore_parameters(env_id, op_id, env)
+                if op.get("restored_data"):
+                    fields["restored_data"] = op["restored_data"]
             self.store.finish(env, op, "READY", "SUCCEEDED", now, **fields)
         return {"outcome": "DONE"}
 

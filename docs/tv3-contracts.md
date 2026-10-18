@@ -26,6 +26,8 @@ Workflow chỉ lưu ID và kết quả gọn trong execution history. Worker đ�
 
 ## Đổi cấu hình
 
+Danh mục công bố cả `plan_update` và `update`; xác nhận dùng đúng change set đã preview. T06 có hợp đồng restore S3 riêng tại [t06-restore-contract.md](t06-restore-contract.md); không truyền S3 URI hoặc prefix tùy ý vào template.
+
 Gửi `plan_update` với config chuẩn hóa. Kết quả PREVIEWED chứa `change_set_id`, `config`, `expected_version`, `changes` trong operation record. Sau khi người dùng xem dự toán và chấp nhận tác động, TV2 đặt reservation quota mới và gửi operation `update` với `preview_operation_id`, `confirmed_change_set_id`, cùng `config` chính xác của preview. F04 kiểm tra lại owner/version và từ chối change set có replacement. Không hỗ trợ thu nhỏ volume hoặc storage RDS.
 
 ## Gia hạn phiên
