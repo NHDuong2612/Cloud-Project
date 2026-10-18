@@ -31,14 +31,39 @@ def test_stored_note_stream_is_closed_and_scope_cannot_escape_environment():
 
 def test_initialization_never_overwrites_existing_or_concurrently_created_data():
     client = Mock()
-    client.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+    client.get_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
     client.put_object.side_effect = ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")
     app.Notes(client, "bucket", PREFIX).ensure()
     assert client.put_object.call_args.kwargs["IfNoneMatch"] == "*"
+    client.get_object.assert_not_called()
     existing = Mock()
-    existing.get_object.return_value = {"Body": BytesIO(b'{"text":"keep"}')}
+    existing.put_object.side_effect = ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")
     app.Notes(existing, "bucket", PREFIX).ensure()
-    existing.put_object.assert_not_called()
+    existing.put_object.assert_called_once()
+    existing.get_object.assert_not_called()
+
+
+def test_empty_prefix_initializes_without_list_bucket_permission_using_sdk_model():
+    import boto3
+    from botocore.stub import Stubber
+    client = boto3.client("s3", region_name="ap-southeast-1", aws_access_key_id="test", aws_secret_access_key="test")
+    with Stubber(client) as stub:
+        stub.add_response("put_object", {}, {"Bucket": "bucket", "Key": PREFIX + "note.json", "Body": b'{"text":""}', "ContentType": "application/json", "ServerSideEncryption": "AES256", "IfNoneMatch": "*"})
+        app.Notes(client, "bucket", PREFIX).ensure()
+        stub.assert_no_pending_responses()
+
+
+def test_conditional_conflict_is_retried_but_bounded():
+    conflict = ClientError({"Error": {"Code": "ConditionalRequestConflict"}}, "PutObject")
+    client = Mock()
+    client.put_object.side_effect = [conflict, {}]
+    app.Notes(client, "bucket", PREFIX).ensure()
+    assert client.put_object.call_count == 2
+    client.reset_mock()
+    client.put_object.side_effect = conflict
+    with pytest.raises(app.StorageUnavailable):
+        app.Notes(client, "bucket", PREFIX).ensure()
+    assert client.put_object.call_count == 3
 
 
 def test_invalid_stored_data_fails_readiness():

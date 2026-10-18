@@ -37,20 +37,22 @@ class Notes:
         return {"text": text}
 
     def ensure(self):
-        from botocore.exceptions import ClientError
-        try:
-            response = self.client.get_object(Bucket=self.bucket, Key=self.key)
-            response["Body"].close()
-            return
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] != "NoSuchKey":
+        from botocore.exceptions import BotoCoreError, ClientError
+        # Missing objects return 403 without ListBucket. A conditional write
+        # initializes safely without widening the per-environment task role.
+        for attempt in range(3):
+            try:
+                self.client.put_object(Bucket=self.bucket, Key=self.key, Body=b'{"text":""}', ContentType="application/json", ServerSideEncryption="AES256", IfNoneMatch="*")
+                return
+            except ClientError as exc:
+                code = exc.response["Error"]["Code"]
+                if code == "PreconditionFailed":
+                    return  # Preserve existing or restored data.
+                if code == "ConditionalRequestConflict" and attempt < 2:
+                    continue
                 raise StorageUnavailable("STORAGE_UNAVAILABLE") from None
-        try:
-            self.client.put_object(Bucket=self.bucket, Key=self.key, Body=b'{"text":""}', ContentType="application/json", ServerSideEncryption="AES256", IfNoneMatch="*")
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] not in {"PreconditionFailed", "ConditionalRequestConflict"}:
+            except BotoCoreError:
                 raise StorageUnavailable("STORAGE_UNAVAILABLE") from None
-            # Another task initialized or changed the note; preserve its data.
 
 
 def handler_for(notes):
