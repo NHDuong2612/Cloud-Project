@@ -26,5 +26,7 @@ Hướng dẫn tiếp theo:
 - [Triển khai nền tảng/worker](docs/tv3-deployment.md)
 - [Hợp đồng tích hợp TV2/TV4](docs/tv3-contracts.md)
 - [Bàn giao và nghiệm thu TV3](docs/tv3-handoff.md)
+- [Kịch bản nghiệm thu A22/A24 và đối chiếu dữ liệu restore](docs/tv3-acceptance.md)
+- [Gia hạn phiên và quy tắc phục hồi workflow](docs/workflow-recovery.md)
 
 GitHub Actions chạy kiểm thử, cfn-lint, CloudFormation Guard (kèm trường hợp âm), shell syntax và Terraform validate. Kiểm chứng AWS hiện mới gồm STS/quota, phiên bản RDS và API validate định nghĩa; không đồng nghĩa đã chạy thành công vòng đời môi trường.

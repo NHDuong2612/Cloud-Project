@@ -1,5 +1,15 @@
 # Tiến độ TV3 — CloudHub
 
+## Bổ sung sau audit ngày 19/10/2026
+
+- `4c57dba`: quyền EC2 update giới hạn instance có tag CloudHub.
+- `af969f1`: worker nhận renew, reservation ràng buộc hạn mới, transaction kiểm tra expiry/version/lock; TV2/TV4 cần tích hợp API/F03/scheduler theo hợp đồng.
+- `3bc0707`: F04 nhận kết quả copy/verify prefix S3 T06 từ F06; TV4 vẫn triển khai và chứng minh copy thật.
+- `6305498`: AllocatedStorage theo config cả sau restore, kiểm tra dung lượng snapshot và mức tăng tối thiểu.
+- `12ce4e1`: bộ chạy ASL cục bộ, response loss/retry/deadline/interrupt; giữ khóa khi NEEDS_ATTENTION.
+- Có công cụ workload_probe và [kịch bản nghiệm thu A22/A24](tv3-acceptance.md), chưa thay thế bài chạy AWS thật.
+- Đã chuẩn bị plan nền tảng: 33 thành phần Terraform thêm, 0 sửa, 0 xóa; plan chứa trong build bị ignore, chưa apply. Tạo tài nguyên AWS chờ nhóm xem/đồng ý theo terraform.tfvars.example.
+
 Mỗi hạng mục có một commit riêng, được đẩy lên GitHub trước khi bắt đầu hạng mục tiếp theo. "Kiểm tra cục bộ" không đồng nghĩa "đã triển khai và nghiệm thu trên AWS".
 
 | Thứ tự | Hạng mục | Phạm vi | Trạng thái |
