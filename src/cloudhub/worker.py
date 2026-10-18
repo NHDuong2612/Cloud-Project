@@ -407,6 +407,9 @@ class Worker:
             if op["status"] not in TERMINAL:
                 self.store.patch_operation(env_id, op_id, status="REJECTED", error_code="REQUEST_REJECTED")
             return {"outcome": "DONE"}
+        if op["action"] == "renew":
+            self.store.finish(env, op, "NEEDS_ATTENTION", "FAILED", int(self.clock()), keep_lock=True, bump_version=False)
+            return {"outcome": "DONE"}
         stack = self.stack(env_id, op)
         if stack:
             self.inventory(env_id, op_id, stack["StackId"])
@@ -414,7 +417,7 @@ class Worker:
             self.cfn.delete_stack(StackName=stack["StackId"], RoleARN=self.settings.cfn_role_arn, ClientRequestToken=f"rollback-{op_id}")
             self.store.patch_operation(env_id, op_id, rollback_started=int(self.clock()), stack_id=stack["StackId"])
             return {"outcome": "WAIT"}
-        self.store.finish(env, op, "NEEDS_ATTENTION", "FAILED", int(self.clock()))
+        self.store.finish(env, op, "NEEDS_ATTENTION", "FAILED", int(self.clock()), keep_lock=True, bump_version=False)
         return {"outcome": "DONE"}
 
     def rollback_poll(self, env_id, op_id, env, op):
@@ -423,7 +426,7 @@ class Worker:
             return {"outcome": "WAIT"}
         if stack:
             self.inventory(env_id, op_id, stack["StackId"])
-        self.store.finish(env, op, "NEEDS_ATTENTION", "FAILED", int(self.clock()))
+        self.store.finish(env, op, "NEEDS_ATTENTION", "FAILED", int(self.clock()), keep_lock=True, bump_version=False)
         return {"outcome": "DONE"}
 
 
@@ -470,10 +473,13 @@ def reconcile_handler(event, context):
     detail = event["detail"]
     if detail.get("stateMachineArn") != os.environ["STATE_MACHINE_ARN"] or detail.get("status") not in {"FAILED", "TIMED_OUT", "ABORTED"}:
         return
-    execution = boto3.client("stepfunctions").describe_execution(executionArn=detail["executionArn"])
+    config = Config(retries={"mode": "standard", "total_max_attempts": 3}, connect_timeout=5, read_timeout=20)
+    execution = boto3.client("stepfunctions", config=config).describe_execution(executionArn=detail["executionArn"])
+    if execution.get("stateMachineArn") != os.environ["STATE_MACHINE_ARN"] or execution.get("status") not in {"FAILED", "TIMED_OUT", "ABORTED"}:
+        return
     data = json.loads(execution["input"])
     worker = runtime()
     _, _, env, op = worker.records(data)
     if op["status"] not in TERMINAL and env.get("lock_owner") == op["operation_id"]:
         worker.store.patch_operation(data["environment_id"], data["operation_id"], error_code="EXECUTION_INTERRUPTED")
-        worker.store.finish(env, op, "NEEDS_ATTENTION", "FAILED", int(time.time()))
+        worker.store.finish(env, op, "NEEDS_ATTENTION", "FAILED", int(time.time()), keep_lock=True, bump_version=False)

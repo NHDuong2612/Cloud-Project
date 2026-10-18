@@ -34,6 +34,8 @@ Gửi `plan_update` với config chuẩn hóa. Kết quả PREVIEWED chứa `cha
 
 ## Gia hạn phiên
 
+Các quy tắc giữ khóa khi lỗi và xử lý execution bị dừng nằm trong [workflow-recovery.md](workflow-recovery.md). Version không tự tăng khi chuyển NEEDS_ATTENTION; khóa được giữ đến khi quản trị/F08 xác minh xong.
+
 TV2 tạo operation `renew` sau khi xác thực owner và xác nhận dự toán mới. Gửi `expected_version`, `expected_expires_at_epoch` (hạn hiện tại) và `new_expires_at_epoch` (hạn mới tuyệt đối). Không đổi cấu hình khi gia hạn. F03 giữ phần chi phí/thời gian tăng thêm, không đếm môi trường thành hai suất quota. Hash reservation và operation là `configuration_hash({"config": config_chuan_hoa, "expires_at_epoch": new_expires_at_epoch})` để không dùng lại dự toán cho thời lượng khác.
 
 Chỉ gia hạn phiên READY chưa hết hạn, tổng thời lượng không quá 480 phút kể từ ready_at, theo phút tròn. Transaction lấy khóa kiểm tra owner/version/status/hạn cũ/phiên chưa hết hạn và tiêu thụ reservation. F04 ghi hạn mới, tổng duration_minutes, tăng version và hoàn tất SUCCEEDED trong transaction; gửi lại operation không cộng thêm giờ. Không thay stack AWS.
