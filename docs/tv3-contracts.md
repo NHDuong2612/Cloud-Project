@@ -17,7 +17,7 @@ T06 nhận alias image được duyệt; worker ánh xạ alias sang ECR digest 
 Bảng control dùng khóa `pk=ENV#<environment_id>` và `sk`. ID môi trường và tác vụ là `uuid.uuid4().hex` (32 ký tự hex). TV2 xác thực owner từ token; không lấy owner, stack ARN hoặc template URL tùy ý từ trình duyệt. Các record dưới đây được TV2 ghi bằng transaction cùng cập nhật quota phía server trước khi gọi F04.
 
 - `sk=META`: `owner_id`, `version` (integer), `template_id`, `template_version`, `config` đã chuẩn hóa, `duration_minutes` 15–480, `retention_policy` là `backup` hoặc `purge`, `status=REQUESTED` khi tạo. Các lần tiếp theo dùng version hiện tại và trạng thái READY. `lock_owner` do F04 điều khiển.
-- `sk=OP#<operation_id>`: `operation_id`, `owner_id`, `action` (`create`, `plan_update`, `update`, `delete`), `expected_version`, `status=QUEUED`. Create/update có `quota_reservation_id` và `config_hash` từ `cloudhub.worker.configuration_hash(config)`. Cấu hình update gửi đầy đủ giá trị chuẩn hóa trong `config`.
+- `sk=OP#<operation_id>`: `operation_id`, `owner_id`, `action` (`create`, `plan_update`, `update`, `renew`, `delete`), `expected_version`, `status=QUEUED`. Create/update có `quota_reservation_id` và `config_hash` từ `cloudhub.worker.configuration_hash(config)`. Cấu hình update gửi đầy đủ giá trị chuẩn hóa trong `config`.
 - `sk=QUOTA#<reservation_id>`: `owner_id`, `operation_id`, `config_hash`, `status=RESERVED`, `valid_until` Unix epoch. F03 cần giữ quota thật bằng cập nhật có điều kiện/transaction; một chuỗi reservation ID tự nó không đủ. F04 kiểm tra record rồi tiêu thụ nó trong cùng transaction lấy khóa. Reservation đã CONSUMED không tự hết hạn; F03/F08 giải phóng sau khi đối chiếu tài nguyên. Không dùng TTL để tự hoàn quota đang sử dụng.
 
 Sau khi lưu, TV2 dùng `cloudhub.operations.start_execution(client, workflow_arn, environment_id, operation_id)` và trả HTTP 202. Tên execution là operation ID để chống gửi lặp. IAM policy gọi workflow nằm ở Terraform output `deployment_workflow.start_execution_policy`. Không cấp quyền StartExecution trực tiếp cho trình duyệt; chỉ backend đã xác thực.
@@ -27,6 +27,14 @@ Workflow chỉ lưu ID và kết quả gọn trong execution history. Worker đ�
 ## Đổi cấu hình
 
 Gửi `plan_update` với config chuẩn hóa. Kết quả PREVIEWED chứa `change_set_id`, `config`, `expected_version`, `changes` trong operation record. Sau khi người dùng xem dự toán và chấp nhận tác động, TV2 đặt reservation quota mới và gửi operation `update` với `preview_operation_id`, `confirmed_change_set_id`, cùng `config` chính xác của preview. F04 kiểm tra lại owner/version và từ chối change set có replacement. Không hỗ trợ thu nhỏ volume hoặc storage RDS.
+
+## Gia hạn phiên
+
+TV2 tạo operation `renew` sau khi xác thực owner và xác nhận dự toán mới. Gửi `expected_version`, `expected_expires_at_epoch` (hạn hiện tại) và `new_expires_at_epoch` (hạn mới tuyệt đối). Không đổi cấu hình khi gia hạn. F03 giữ phần chi phí/thời gian tăng thêm, không đếm môi trường thành hai suất quota. Hash reservation và operation là `configuration_hash({"config": config_chuan_hoa, "expires_at_epoch": new_expires_at_epoch})` để không dùng lại dự toán cho thời lượng khác.
+
+Chỉ gia hạn phiên READY chưa hết hạn, tổng thời lượng không quá 480 phút kể từ ready_at, theo phút tròn. Transaction lấy khóa kiểm tra owner/version/status/hạn cũ/phiên chưa hết hạn và tiêu thụ reservation. F04 ghi hạn mới, tổng duration_minutes, tăng version và hoàn tất SUCCEEDED trong transaction; gửi lại operation không cộng thêm giờ. Không thay stack AWS.
+
+Scheduler TV4 phải dùng điều kiện owner/version/status READY, không có lock_owner, đúng expires_at_epoch đã đọc và expires_at_epoch <= now khi chuyển FINALIZING. Nếu gia hạn lấy khóa trước, lịch cũ bị từ chối; nếu thu hồi lấy khóa trước, gia hạn bị từ chối. Stream phát record READY mới để cập nhật lịch. Mã scheduler/API/F03 vẫn thuộc TV2/TV4; chưa tuyên bố có endpoint gia hạn hoặc scheduler vận hành.
 
 ## Thu hồi và phối hợp TV4
 

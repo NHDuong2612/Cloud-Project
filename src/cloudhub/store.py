@@ -44,7 +44,11 @@ class DynamoStore:
                 "ExpressionAttributeValues": {":owner": op["owner_id"], ":queued": "QUEUED", ":running": "RUNNING", ":now": now},
             }},
         ]
-        if op["action"] in {"create", "update"}:
+        if op["action"] == "renew":
+            update = transactions[0]["Update"]
+            update["ConditionExpression"] += " AND expires_at_epoch=:expiry AND expires_at_epoch>:now AND ready_at=:ready"
+            update["ExpressionAttributeValues"].update({":expiry": op["expected_expires_at_epoch"], ":ready": env["ready_at"]})
+        if op["action"] in {"create", "update", "renew"}:
             transactions.append({"Update": {
                 "TableName": self.table.name, "Key": {"pk": env["pk"], "sk": f"QUOTA#{op['quota_reservation_id']}"},
                 "UpdateExpression": "SET #s=:consumed",

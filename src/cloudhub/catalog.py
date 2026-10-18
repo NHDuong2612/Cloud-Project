@@ -53,7 +53,7 @@ class Template:
             "id": self.id, "version": self.version, "name": self.name, "owner": self.owner,
             "implemented": self.path.is_file(), "available": self.path.is_file() and f"{self.id}@{self.version}" in verified,
             "schema": self.schema, "backup_scope": self.backup_scope,
-            "actions": ["create", "inspect", "plan_update", "delete"] if self.path.is_file() else [],
+            "actions": ["create", "inspect", "plan_update", "update", "renew", "delete"] if self.path.is_file() else [],
         }
 
 

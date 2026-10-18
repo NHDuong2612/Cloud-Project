@@ -102,6 +102,11 @@
       "Choices": [
         {
           "Variable": "$.outcome",
+          "StringEquals": "DONE",
+          "Next": "Succeeded"
+        },
+        {
+          "Variable": "$.outcome",
           "StringEquals": "ERROR",
           "Next": "Recover"
         },

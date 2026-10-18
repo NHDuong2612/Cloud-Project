@@ -91,21 +91,27 @@ class Worker:
 
     def acquire(self, env_id, op_id, env, op):
         action = op["action"]
-        if action not in {"create", "plan_update", "update", "delete"}:
+        if action not in {"create", "plan_update", "update", "delete", "renew"}:
             raise ValidationError("Unsupported operation.")
         if int(env["version"]) != int(op["expected_version"]):
             raise ValidationError("Environment version has changed.")
-        allowed = {"create": {"REQUESTED", "PROVISIONING"}, "plan_update": {"READY", "PLANNING"}, "update": {"READY", "UPDATING"}, "delete": {"READY", "PAUSED", "FINALIZING", "DELETING"}}
+        allowed = {"create": {"REQUESTED", "PROVISIONING"}, "plan_update": {"READY", "PLANNING"}, "update": {"READY", "UPDATING"}, "delete": {"READY", "PAUSED", "FINALIZING", "DELETING"}, "renew": {"READY", "RENEWING"}}
         if env["status"] not in allowed[action] or env.get("lock_owner") not in (None, op_id):
             raise ValidationError("Environment is busy or in an incompatible state.")
         if action != "delete":
             require_available(env["template_id"], env["template_version"], self.settings.verified)
             config = validate_config(env["template_id"], env["template_version"], op.get("config", env["config"]))
-            if action in {"create", "update"} and not op.get("quota_reservation_id"):
+            if action == "renew":
+                expiry, target, ready = env.get("expires_at_epoch"), op.get("new_expires_at_epoch"), env.get("ready_at")
+                if config != env["config"] or any(type(x) is not int for x in (expiry, target, ready)) or op.get("expected_expires_at_epoch") != expiry:
+                    raise ValidationError("Renewal must match the current configuration and expiry.")
+                if expiry <= int(self.clock()) or not expiry < target <= ready + 480 * 60 or (target - ready) % 60:
+                    raise ValidationError("Renewal requires an active session and a total duration of at most eight hours.")
+            if action in {"create", "update", "renew"} and not op.get("quota_reservation_id"):
                 raise ValidationError("A server-side quota reservation is required.")
-            if action in {"create", "update"}:
+            if action in {"create", "update", "renew"}:
                 reservation = self.store.get(env_id, f"QUOTA#{op['quota_reservation_id']}")
-                expected_hash = configuration_hash(config)
+                expected_hash = configuration_hash({"config": config, "expires_at_epoch": target}) if action == "renew" else configuration_hash(config)
                 if not reservation or not all([
                     reservation.get("owner_id") == env["owner_id"], reservation.get("operation_id") == op_id,
                     reservation.get("config_hash") == expected_hash, op.get("config_hash") == expected_hash,
@@ -124,7 +130,7 @@ class Worker:
                 self.restore_parameters(env_id, op_id, env)
         else:
             self.check_delete(env_id, op_id, env, op)
-        status = {"create": "PROVISIONING", "plan_update": "PLANNING", "update": "UPDATING", "delete": "DELETING"}[action]
+        status = {"create": "PROVISIONING", "plan_update": "PLANNING", "update": "UPDATING", "delete": "DELETING", "renew": "RENEWING"}[action]
         self.store.lock(env, op, status, int(self.clock()))
         return {}
 
@@ -186,6 +192,10 @@ class Worker:
 
     def prepare(self, env_id, op_id, env, op):
         action = op["action"]
+        if action == "renew":
+            target = op["new_expires_at_epoch"]
+            self.store.finish(env, op, "READY", "SUCCEEDED", int(self.clock()), expires_at_epoch=target, duration_minutes=(target - env["ready_at"]) // 60)
+            return {"outcome": "DONE"}
         if action == "delete":
             stack = self.stack(env_id, op)
             if not stack:
