@@ -153,6 +153,15 @@ resource "aws_iam_role_policy" "cloudformation" {
         Sid       = "CreateBoundedWorkloadRoles", Effect = "Allow", Action = "iam:CreateRole", Resource = local.workload_role_arn
         Condition = { StringEquals = { "iam:PermissionsBoundary" = aws_iam_policy.workload_boundary.arn } }
       },
+      {
+        Sid       = "UpdateOwnedInstances", Effect = "Allow"
+        Action    = ["ec2:StopInstances", "ec2:StartInstances", "ec2:ModifyInstanceCreditSpecification"]
+        Resource  = "${local.arn_prefix}:ec2:${local.region}:${local.account_id}:instance/*"
+        Condition = { StringEquals = { "ec2:ResourceTag/Project" = "CloudHub" } }
+      },
+      # EC2 resource-provider read handlers inspect SSM associations, even when
+      # the template does not create an association. These APIs are read only.
+      { Effect = "Allow", Action = ["ssm:DescribeAssociation", "ssm:ListAssociations"], Resource = "*", Condition = { StringEquals = { "aws:RequestedRegion" = local.region } } },
       { Effect = "Allow", Action = ["iam:GetRole", "iam:DeleteRole", "iam:PutRolePolicy", "iam:GetRolePolicy", "iam:DeleteRolePolicy", "iam:ListRolePolicies", "iam:TagRole", "iam:UntagRole"], Resource = local.workload_role_arn },
       { Effect = "Allow", Action = ["iam:CreateInstanceProfile", "iam:GetInstanceProfile", "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:DeleteInstanceProfile", "iam:TagInstanceProfile", "iam:UntagInstanceProfile"], Resource = "${local.arn_prefix}:iam::${local.account_id}:instance-profile/cloudhub/workloads/cloudhub-env-*" },
       { Effect = "Allow", Action = "iam:PassRole", Resource = local.workload_role_arn, Condition = { StringEquals = { "iam:PassedToService" = ["ec2.amazonaws.com", "ecs-tasks.amazonaws.com"] } } },
