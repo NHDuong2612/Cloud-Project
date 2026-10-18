@@ -2,6 +2,10 @@
 
 CloudHub tạo và quản lý môi trường AWS theo phiên. Phần TV3 cung cấp hạ tầng dùng chung, danh mục mẫu có phiên bản và bộ điều phối CloudFormation. Mã CloudRescue và Terraform state cũ được lưu riêng trong [legacy/cloudrescue](legacy/cloudrescue/).
 
+## Nền tảng AWS hiện tại
+
+Đã tạo nền tảng dùng chung ngày 19/10/2026 bằng IAM cloudrescue-admin: mạng hai AZ, hai bucket S3, DynamoDB, ECR và IAM. Terraform báo 33 added, 0 changed, 0 destroyed; plan sau triển khai không có thay đổi. Xem [tài nguyên và kết quả đối chiếu](docs/evidence/foundation-applied.md). Worker/workflow và môi trường ứng dụng chưa được triển khai.
+
 ## Mã hiện có
 
 - `terraform/`: mạng hai AZ, S3 riêng tư, control table DynamoDB, ECR, permissions boundary, worker Lambda, Standard Step Functions và đường xử lý execution lỗi.

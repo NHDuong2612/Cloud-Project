@@ -1,5 +1,7 @@
 # A03 — kết quả ngày 17/10/2026
 
+Bản này là kết quả trước triển khai; xem [minh chứng apply thành công ngày 19/10/2026](foundation-applied.md) để có trạng thái hiện tại.
+
 - Terraform init và validate: đạt, AWS provider 5.100.0.
 - Ba kiểm thử preflight: đạt (chặn nhầm account, chặn root, yêu cầu hai AZ).
 - AWS STS xác nhận account của nhóm bằng profile cũ; không in credential.

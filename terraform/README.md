@@ -1,5 +1,7 @@
 # CloudHub — hạ tầng dùng chung của TV3
 
+Nền tảng network/storage/platform đã triển khai ngày 19/10/2026; [minh chứng và outputs](../docs/evidence/foundation-applied.md). Bản checkout đang có state và cloudhub.auto.tfvars.json cục bộ bị Git ignore; giữ/sao lưu chúng khi vận hành. Các cờ mặc định trong mã dành cho checkout mới, không thay thế cấu hình đang chạy. Orchestrator vẫn tắt.
+
 State ở đây tách khỏi `legacy/cloudrescue/terraform/`. Dùng AWS profile admin hoặc SSO của nhóm để triển khai nền tảng; không cần root. Các workload dùng role riêng được giới hạn quyền, không nhận quyền admin của người triển khai.
 
 | Module | Nội dung | Cờ bật |

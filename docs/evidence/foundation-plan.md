@@ -1,5 +1,7 @@
 # Kế hoạch nền tảng — 19/10/2026
 
+**Đã được duyệt và áp dụng sau khi ghi plan này.** Xem [kết quả apply và đối chiếu AWS](foundation-applied.md). Nội dung dưới đây mô tả thời điểm chuẩn bị plan.
+
 Plan đã chạy bằng profile IAM cloudrescue-dev trong ap-southeast-1, chặn account khác bằng allowed_account_ids. Kết quả: **33 add, 0 change, 0 destroy** (32 AWS resource/configuration và một terraform_data).
 
 - Network: một VPC, một Internet Gateway, bốn subnet trong hai AZ, ba route table, bốn association và một route public. Không có NAT Gateway.

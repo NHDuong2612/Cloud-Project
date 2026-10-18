@@ -10,14 +10,14 @@ Kiểm tra cuối: **114 kiểm thử đạt**. Xem [kết quả và giới hạ
 - `6305498`: AllocatedStorage theo config cả sau restore, kiểm tra dung lượng snapshot và mức tăng tối thiểu.
 - `12ce4e1`: bộ chạy ASL cục bộ, response loss/retry/deadline/interrupt; giữ khóa khi NEEDS_ATTENTION.
 - Có công cụ workload_probe và [kịch bản nghiệm thu A22/A24](tv3-acceptance.md), chưa thay thế bài chạy AWS thật.
-- Đã chuẩn bị plan nền tảng: 33 thành phần Terraform thêm, 0 sửa, 0 xóa; plan chứa trong build bị ignore, chưa apply. Tạo tài nguyên AWS chờ nhóm xem/đồng ý theo terraform.tfvars.example.
+- Người dùng đã duyệt và đã apply nền tảng: 33 thêm, 0 sửa, 0 xóa; plan sau apply không có thay đổi. Xem [minh chứng AWS thật](evidence/foundation-applied.md).
 
 Mỗi hạng mục có một commit riêng, được đẩy lên GitHub trước khi bắt đầu hạng mục tiếp theo. "Kiểm tra cục bộ" không đồng nghĩa "đã triển khai và nghiệm thu trên AWS".
 
 | Thứ tự | Hạng mục | Phạm vi | Trạng thái |
 | --- | --- | --- | --- |
 | 0 | Chuyển đề tài | Tách state CloudRescue; giữ lại mạng và S3 dùng được | Đã dọn mã |
-| 1 | A03 | IaC nền tảng TV3, cấu hình triển khai và kiểm tra quyền/quota | Terraform validate đạt, 3 kiểm thử đạt, preflight AWS chỉ đọc đạt; chưa apply |
+| 1 | A03 | IaC nền tảng TV3, cấu hình triển khai và kiểm tra quyền/quota | Đã apply 33 thành phần nền tảng; đã đối chiếu AWS và plan sau apply No changes |
 | 2 | F02 | Danh mục phiên bản mẫu, schema đầu vào, hợp đồng với TV2/TV4 | Đã viết catalog/schema và kiểm thử; mẫu chỉ bật sau kiểm chứng AWS |
 | 3 | A07 / F04 | Step Functions, worker CloudFormation, khóa tác vụ, health check, rollback, inventory | Đã viết worker/workflow và IaC; kiểm thử cục bộ và ASL AWS đạt; chưa chạy vòng đời AWS |
 | 4 | A10 / T01 | Linux EC2/EBS qua SSM | Đã có template và kiểm thử; chờ kiểm chứng vòng đời với TV4 trên AWS |

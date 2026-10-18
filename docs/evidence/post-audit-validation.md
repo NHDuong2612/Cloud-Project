@@ -1,5 +1,7 @@
 # Kết quả sau audit — 19/10/2026
 
+Cập nhật sau báo cáo này: người dùng đã duyệt và nền tảng đã triển khai; xem [foundation-applied.md](foundation-applied.md). Phần còn chờ dưới đây ghi nhận thời điểm trước khi nhận được sự đồng ý.
+
 ## Mã đã hoàn thành và đẩy từng phần
 
 - 4c57dba: bổ sung quyền EC2 update theo phạm vi instance/tag.
